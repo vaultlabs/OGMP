@@ -14,7 +14,11 @@ export const WELCOME = `🔷 *Welcome to OGMP MM*
 
 Premium, safety-first escrow for your peer-to-peer crypto trades.
 
-Use the menu below to create a deal, join a counterparty, or review your profile.
+*How it works (simple):*
+1️⃣ *Create deal* (or *Join deal* with a link from your friend).
+2️⃣ Open *📂 My deals* → tap your *deal code*.
+3️⃣ Both sides *Accept terms* → bot shows a *crypto address* → buyer sends from their own wallet (Telegram cannot charge a card for on-chain crypto).
+4️⃣ Use *💬 Send msg / upload proof* to chat and send photos, documents, or zip in the deal room.
 
 ⚠️ Always verify networks, amounts, and counterparties before sending funds.`;
 

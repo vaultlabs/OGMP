@@ -244,7 +244,9 @@ export function createMainBot(): Bot<Context> {
     });
     await ctx.answerCallbackQuery();
     if (!deals.length) {
-      await ctx.reply("You have no deals yet.");
+      await ctx.reply(
+        "You have no deals yet.\n\nTap ➕ Create deal in the menu below, or ask your friend for a Join link.",
+      );
       return;
     }
     const kb = new InlineKeyboard();
@@ -272,6 +274,35 @@ export function createMainBot(): Bot<Context> {
     }
     await ctx.answerCallbackQuery();
     const text = await fmtDealCard(deal.id);
+    let hint = "";
+    if (deal.status === "pending_acceptance") {
+      hint =
+        "\n\n📌 *Next:* Both buyer and seller tap *Accept deal terms*. After that, the bot shows the *payment address* for the buyer.";
+    } else if (deal.status === "waiting_payment" || deal.status === "payment_detected") {
+      if (deal.buyerId === u.id) {
+        hint =
+          "\n\n📌 *Buyer:* Copy the *payment address* in this message. Send the *exact amount* on the *correct network* from your *crypto wallet* (MetaMask, exchange withdraw, etc.). There is no Pay button inside Telegram for on-chain crypto.";
+      } else if (deal.sellerId === u.id) {
+        hint =
+          "\n\n📌 *Seller:* Wait until this deal shows *funded*. You can still tap *Send msg / upload proof* to post files or notes.";
+      } else {
+        hint =
+          "\n\n📌 Wait for both roles to be filled and terms accepted, then the buyer pays to the address above.";
+      }
+    } else if (deal.status === "funded") {
+      if (deal.sellerId === u.id) {
+        hint =
+          "\n\n📌 *Seller:* Send the item/service, then tap *Mark delivered*. Use *Send msg / upload proof* first if you need to attach photos, PDFs, or a .zip.";
+      } else if (deal.buyerId === u.id) {
+        hint =
+          "\n\n📌 *Buyer:* Wait for delivery. Use *Send msg / upload proof* to send screenshots or questions.";
+      }
+    } else if (deal.status === "item_delivered" && deal.buyerId === u.id) {
+      hint =
+        "\n\n📌 *Buyer:* When you are satisfied, tap *Confirm receipt & release*.";
+    } else if (deal.status === "item_delivered" && deal.sellerId === u.id) {
+      hint = "\n\n📌 *Seller:* Wait for the buyer to confirm.";
+    }
     const kb = new InlineKeyboard();
     if (deal.status === "pending_acceptance") {
       kb.text("✅ Accept deal terms", `d:a:${deal.dealCode}`);
@@ -298,7 +329,7 @@ export function createMainBot(): Bot<Context> {
     kb.text("💬 Send msg / upload proof", `dr:enter:${deal.dealCode}`).row();
     kb.text("📅 Timeline", `d:tl:${deal.dealCode}`).text("📎 Uploaded proof", `d:pr:${deal.dealCode}`).row();
     kb.text("📝 Report deal", `d:rp:${deal.dealCode}`);
-    await ctx.reply(text, { parse_mode: "Markdown", reply_markup: kb });
+    await ctx.reply(text + hint, { parse_mode: "Markdown", reply_markup: kb });
   });
 
   bot.callbackQuery(/^d:tl:(.+)$/, async (ctx) => {
