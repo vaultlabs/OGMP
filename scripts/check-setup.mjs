@@ -20,7 +20,30 @@ if (!existsSync(envPath)) {
 
 config({ path: envPath });
 
-if (process.env.CODESPACES === "true") {
+const inCodespaces = process.env.CODESPACES === "true";
+const dbUrlEarly = process.env.DATABASE_URL ?? "";
+const redisEarly = process.env.REDIS_URL ?? "";
+
+if (!inCodespaces && dbUrlEarly.includes("@postgres:")) {
+  console.log("\n❌ Wrong place for this DATABASE_URL\n");
+  console.log("   Your .env says host **postgres**. That ONLY works inside **GitHub Codespaces** (or Docker),");
+  console.log("   NOT in the black CMD window on your own PC.\n");
+  console.log("   Pick ONE:\n");
+  console.log("   • **GitHub (no Docker on your PC):** Open https://github.com/vaultlabs/OGMP → green **Code** →");
+  console.log("     **Codespaces** → **Create codespace** → in *that* browser terminal run `npm run dev`.\n");
+  console.log("   • **Stay on your PC:** Change DATABASE_URL to use **localhost** and install PostgreSQL + Redis");
+  console.log("     on Windows (no Docker) — see README section *Local Postgres + Redis (no Docker)*.\n");
+  process.exit(1);
+}
+
+if (!inCodespaces && redisEarly.startsWith("redis://redis:") && !redisEarly.includes("localhost")) {
+  console.log("\n❌ Wrong REDIS_URL for your PC\n");
+  console.log("   **redis://redis:6379** only works in Codespaces/Docker.");
+  console.log("   On your PC use: REDIS_URL=redis://localhost:6379\n");
+  process.exit(1);
+}
+
+if (inCodespaces) {
   const db = process.env.DATABASE_URL ?? "";
   if (db.includes("localhost") || db.includes("127.0.0.1")) {
     console.log(
@@ -56,16 +79,12 @@ line(hasAdmin, "ADMIN_IDS or ADMIN_TELEGRAM_IDS is filled in (your Telegram numb
 line(!!process.env.MOCK_WEBHOOK_SECRET?.trim(), "MOCK_WEBHOOK_SECRET is filled in (any long random text is ok)");
 
 const dbUrl = process.env.DATABASE_URL ?? "";
-if (dbUrl.includes("@postgres:") && !dbUrl.includes("localhost") && !dbUrl.includes("127.0.0.1")) {
-  console.log(
-    "  ⚠️  DATABASE_URL uses hostname postgres — that works *inside* Docker. If you run npm on your PC, change postgres to localhost.",
-  );
+if (dbUrl.includes("@postgres:") && !dbUrl.includes("localhost") && !dbUrl.includes("127.0.0.1") && inCodespaces) {
+  console.log("  ℹ️  DATABASE_URL uses hostname postgres — correct for Codespaces.");
 }
 const redisUrl = process.env.REDIS_URL ?? "";
-if (redisUrl.startsWith("redis://redis:") && !redisUrl.includes("localhost") && !redisUrl.includes("127.0.0.1")) {
-  console.log(
-    "  ⚠️  REDIS_URL points at hostname redis — that works *inside* Docker. If you run npm on your PC, use redis://localhost:6379",
-  );
+if (redisUrl.startsWith("redis://redis:") && !redisUrl.includes("localhost") && !redisUrl.includes("127.0.0.1") && inCodespaces) {
+  console.log("  ℹ️  REDIS_URL uses redis host — correct for Codespaces.");
 }
 
 const reportTok = process.env.OGMP_MM_REPORT_BOT_TOKEN?.trim();
@@ -77,10 +96,9 @@ if (reportTok) {
 
 console.log("");
 if (bad === 0) {
-  const next =
-    process.env.CODESPACES === "true"
-      ? "🎉 Looks good! Run:  npm run dev\n"
-      : "🎉 Looks good! Try:  npm run db:setup   then   npm run dev\n";
+  const next = inCodespaces
+    ? "🎉 Looks good! Run:  npm run dev\n"
+    : "🎉 Looks good! Try:  npm run db:setup   then   npm run dev\n";
   console.log(next);
   process.exit(0);
 }

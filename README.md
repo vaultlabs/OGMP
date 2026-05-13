@@ -43,6 +43,8 @@ Your project includes **`.devcontainer/`** so **GitHub Codespaces** (or VS Code 
 
 You still need **internet** and a **free GitHub account**. You do **not** need to install Docker Desktop on Windows for this path.
 
+**Important:** Run **`npm run dev`** only in the **terminal inside the browser Codespace**, not in **CMD on your Desktop** — your Desktop is a different computer and does not know the name `postgres`.
+
 #### GitHub Codespaces — do this slowly, one line at a time
 
 **A — Put the project on GitHub (one time)**
