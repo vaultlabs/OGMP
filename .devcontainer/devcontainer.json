@@ -1,0 +1,16 @@
+{
+  "name": "OGMP MM (browser / cloud)",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": { "label": "HTTP health + webhooks" }
+  },
+  "postCreateCommand": "npm install && npm run prisma:generate && npm run prisma:migrate:deploy && npx prisma db seed",
+  "customizations": {
+    "vscode": {
+      "extensions": ["Prisma.prisma", "dbaeumer.vscode-eslint"]
+    }
+  }
+}

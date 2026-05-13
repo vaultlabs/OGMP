@@ -1,0 +1,554 @@
+// Prisma schema for OGMP MM — main + report bots, shared PostgreSQL
+// https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DealStatus {
+  pending_acceptance
+  waiting_payment
+  payment_detected
+  funded
+  item_delivered
+  buyer_confirmed
+  release_requested
+  released
+  disputed
+  cancelled
+  refunded
+}
+
+enum FeePayer {
+  buyer
+  seller
+  split
+}
+
+enum ParticipantRole {
+  buyer
+  seller
+}
+
+enum PaymentRecordStatus {
+  pending
+  detecting
+  confirming
+  confirmed
+  underpaid
+  overpaid
+  expired
+  failed
+}
+
+enum PayoutStatus {
+  pending
+  processing
+  completed
+  failed
+}
+
+enum DisputeStatus {
+  open
+  awaiting_evidence
+  resolved
+}
+
+enum DisputeResolution {
+  release_to_seller
+  refund_buyer
+  partial_refund
+  cancel_deal
+  request_more_evidence
+}
+
+enum SupportTicketStatus {
+  open
+  closed
+}
+
+enum DealMessageType {
+  text
+  photo
+  video
+  document
+  animation
+  voice
+  audio
+  other
+}
+
+enum ReportStatus {
+  draft
+  submitted
+  under_review
+  waiting_for_buyer
+  waiting_for_seller
+  resolved_release
+  resolved_refund
+  resolved_partial
+  rejected
+  closed
+}
+
+enum ReportCategory {
+  seller_no_delivery
+  buyer_no_confirm
+  wrong_item
+  scam_attempt
+  payment_issue
+  fake_proof
+  other
+}
+
+model User {
+  id               String    @id @default(uuid()) @db.Uuid
+  telegramId       BigInt    @unique @map("telegram_id")
+  username         String?
+  firstName        String?   @map("first_name")
+  termsAcceptedAt  DateTime? @map("terms_accepted_at")
+  joinedAt         DateTime  @default(now()) @map("joined_at")
+  banned           Boolean   @default(false)
+  bannedReason     String?   @map("banned_reason")
+  completedDeals   Int       @default(0) @map("completed_deals")
+  disputedDeals    Int       @default(0) @map("disputed_deals")
+  cancelledDeals   Int       @default(0) @map("cancelled_deals")
+  totalVolumeUsd   Decimal   @default(0) @map("total_volume_usd") @db.Decimal(36, 18)
+  reputationScore  Decimal   @default(0) @map("reputation_score") @db.Decimal(5, 2)
+  suspiciousFlags  Json      @default("[]") @map("suspicious_flags")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  dealsAsBuyer        Deal[]            @relation("DealBuyer")
+  dealsAsSeller       Deal[]            @relation("DealSeller")
+  dealsCreated        Deal[]            @relation("DealCreator")
+  participants        DealParticipant[]
+  reviewsGiven        Review[]          @relation("ReviewFrom")
+  reviewsReceived     Review[]          @relation("ReviewTo")
+  disputesOpened      Dispute[]         @relation("DisputeOpenedBy")
+  disputeEvidence     DisputeEvidence[]
+  auditLogs           AuditLog[]
+  supportTickets      SupportTicket[]
+  notifications       NotificationLog[]
+  dealMessages        DealMessage[]     @relation("DealMessageSender")
+  timelineEvents      DealTimelineEvent[] @relation("TimelineActor")
+  reportsSubmitted    Report[]          @relation("ReportReporter")
+  reportSessions      ReportSession[]
+  reportEvidence      ReportEvidence[]
+
+  @@map("users")
+}
+
+model Deal {
+  id               String      @id @default(uuid()) @db.Uuid
+  dealCode         String      @unique @map("deal_code")
+  inviteToken      String      @unique @map("invite_token")
+  buyerId          String?     @map("buyer_id") @db.Uuid
+  sellerId         String?     @map("seller_id") @db.Uuid
+  creatorId        String      @map("creator_id") @db.Uuid
+  creatorRole      ParticipantRole @map("creator_role")
+  title            String
+  description      String
+  dealTerms        String      @map("deal_terms")
+  deliveryInstructions String @map("delivery_instructions")
+  proofRequirements String?  @map("proof_requirements")
+  sellerPayoutAddress String? @map("seller_payout_address")
+  buyerRefundAddress String?  @map("buyer_refund_address")
+  amount           Decimal     @db.Decimal(36, 18)
+  currency         String
+  network          String
+  feeAmount        Decimal     @map("fee_amount") @db.Decimal(36, 18)
+  feePayer         FeePayer    @map("fee_payer")
+  networkFeeEstimate Decimal   @default(0) @map("network_fee_estimate") @db.Decimal(36, 18)
+  status           DealStatus  @default(pending_acceptance)
+  version          Int         @default(0)
+  frozen           Boolean     @default(false)
+  frozenAt         DateTime?   @map("frozen_at")
+  frozenReason     String?     @map("frozen_reason")
+  activeReportId   String?     @unique @map("active_report_id") @db.Uuid
+  paymentAddress   String?     @map("payment_address")
+  paymentProviderRef String?   @map("payment_provider_ref")
+  paymentExpiresAt DateTime?   @map("payment_expires_at")
+  txHash           String?     @map("tx_hash")
+  fundedAt         DateTime?   @map("funded_at")
+  deliveredAt      DateTime?   @map("delivered_at")
+  releasedAt       DateTime?   @map("released_at")
+  cancelledAt      DateTime?   @map("cancelled_at")
+  disputedAt       DateTime?   @map("disputed_at")
+  autoReleaseNotBefore DateTime? @map("auto_release_not_before")
+  lastActivityAt   DateTime    @default(now()) @map("last_activity_at")
+  createdAt        DateTime    @default(now()) @map("created_at")
+  updatedAt        DateTime    @updatedAt @map("updated_at")
+
+  buyer            User?       @relation("DealBuyer", fields: [buyerId], references: [id])
+  seller           User?       @relation("DealSeller", fields: [sellerId], references: [id])
+  creator          User        @relation("DealCreator", fields: [creatorId], references: [id])
+  participants     DealParticipant[]
+  payments         Payment[]
+  payouts          Payout[]
+  disputes         Dispute[]
+  reviews          Review[]
+  messages         DealMessage[]
+  timeline         DealTimelineEvent[]
+  reports          Report[]
+  reportSessions   ReportSession[]
+  activeReport     Report?     @relation("ActiveReport", fields: [activeReportId], references: [id])
+
+  @@index([status])
+  @@index([creatorId])
+  @@index([frozen])
+  @@map("deals")
+}
+
+model DealParticipant {
+  id               String            @id @default(uuid()) @db.Uuid
+  dealId           String            @map("deal_id") @db.Uuid
+  userId           String            @map("user_id") @db.Uuid
+  role             ParticipantRole
+  termsAcceptedAt  DateTime?         @map("terms_accepted_at")
+  createdAt        DateTime          @default(now()) @map("created_at")
+
+  deal Deal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([dealId, userId])
+  @@index([dealId])
+  @@map("deal_participants")
+}
+
+model DealMessage {
+  id                   String          @id @default(uuid()) @db.Uuid
+  dealId               String          @map("deal_id") @db.Uuid
+  senderId             String          @map("sender_id") @db.Uuid
+  messageType          DealMessageType @map("message_type")
+  text                 String          @default("")
+  telegramFileId       String?         @map("telegram_file_id")
+  telegramFileUniqueId String?         @map("telegram_file_unique_id")
+  fileName             String?         @map("file_name")
+  mimeType             String?         @map("mime_type")
+  fileSize             Int?            @map("file_size")
+  caption              String?
+  createdAt            DateTime        @default(now()) @map("created_at")
+
+  deal   Deal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  sender User @relation("DealMessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([dealId, createdAt])
+  @@map("deal_messages")
+}
+
+model DealTimelineEvent {
+  id           String   @id @default(uuid()) @db.Uuid
+  dealId       String   @map("deal_id") @db.Uuid
+  actorId      String?  @map("actor_id") @db.Uuid
+  eventType    String   @map("event_type")
+  metadataJson Json?    @map("metadata_json")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  deal  Deal  @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  actor User? @relation("TimelineActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([dealId, createdAt])
+  @@map("deal_timeline_events")
+}
+
+model Report {
+  id                       String         @id @default(uuid()) @db.Uuid
+  reportCode               String         @unique @map("report_code")
+  dealId                   String         @map("deal_id") @db.Uuid
+  reporterId               String         @map("reporter_id") @db.Uuid
+  reporterRole             ParticipantRole @map("reporter_role")
+  category                 ReportCategory
+  description              String
+  status                   ReportStatus   @default(draft)
+  assignedAdminTelegramId  BigInt?        @map("assigned_admin_telegram_id")
+  createdAt                DateTime       @default(now()) @map("created_at")
+  updatedAt                DateTime       @updatedAt @map("updated_at")
+  resolvedAt               DateTime?      @map("resolved_at")
+
+  deal         Deal               @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  reporter     User               @relation("ReportReporter", fields: [reporterId], references: [id])
+  evidence     ReportEvidence[]
+  adminNotes   ReportAdminNote[]
+  activeOnDeal Deal?              @relation("ActiveReport")
+
+  @@index([dealId])
+  @@index([status])
+  @@map("reports")
+}
+
+model ReportEvidence {
+  id                   String   @id @default(uuid()) @db.Uuid
+  reportId             String   @map("report_id") @db.Uuid
+  uploaderId           String   @map("uploader_id") @db.Uuid
+  evidenceType         String   @map("evidence_type")
+  text                 String   @default("")
+  telegramFileId       String?  @map("telegram_file_id")
+  telegramFileUniqueId String?  @map("telegram_file_unique_id")
+  fileName             String?  @map("file_name")
+  mimeType             String?  @map("mime_type")
+  fileSize             Int?     @map("file_size")
+  caption              String?
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  report   Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  uploader User   @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
+
+  @@index([reportId])
+  @@map("report_evidence")
+}
+
+model ReportAdminNote {
+  id                String   @id @default(uuid()) @db.Uuid
+  reportId          String   @map("report_id") @db.Uuid
+  adminTelegramId   BigInt   @map("admin_telegram_id")
+  note              String
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId])
+  @@map("report_admin_notes")
+}
+
+model ReportSession {
+  id         String    @id @default(uuid()) @db.Uuid
+  dealId     String    @map("deal_id") @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  tokenHash  String    @unique @map("token_hash")
+  expiresAt  DateTime  @map("expires_at")
+  usedAt     DateTime? @map("used_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  deal Deal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([dealId])
+  @@map("report_sessions")
+}
+
+model Payment {
+  id               String              @id @default(uuid()) @db.Uuid
+  dealId           String              @map("deal_id") @db.Uuid
+  provider         String
+  idempotencyKey   String              @unique @map("idempotency_key")
+  address          String?
+  reference        String?
+  expectedAmount   Decimal             @map("expected_amount") @db.Decimal(36, 18)
+  receivedAmount   Decimal             @default(0) @map("received_amount") @db.Decimal(36, 18)
+  currency         String
+  network          String
+  status           PaymentRecordStatus @default(pending)
+  txHash           String?             @map("tx_hash")
+  confirmations    Int                 @default(0)
+  requiredConfirmations Int            @default(1) @map("required_confirmations")
+  expiresAt        DateTime?           @map("expires_at")
+  webhookDeliveredAt DateTime?         @map("webhook_delivered_at")
+  rawPayload       Json?               @map("raw_payload")
+  createdAt        DateTime            @default(now()) @map("created_at")
+  updatedAt        DateTime            @updatedAt @map("updated_at")
+
+  deal Deal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  @@index([dealId])
+  @@index([status])
+  @@map("payments")
+}
+
+model Payout {
+  id          String       @id @default(uuid()) @db.Uuid
+  dealId      String       @map("deal_id") @db.Uuid
+  amount      Decimal      @db.Decimal(36, 18)
+  feeDeducted Decimal      @map("fee_deducted") @db.Decimal(36, 18)
+  currency    String
+  network     String
+  toAddress   String       @map("to_address")
+  status      PayoutStatus @default(pending)
+  txHash      String?      @map("tx_hash")
+  providerRef String?      @map("provider_ref")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  deal Deal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  @@index([dealId])
+  @@map("payouts")
+}
+
+model Dispute {
+  id          String             @id @default(uuid()) @db.Uuid
+  dealId      String             @map("deal_id") @db.Uuid
+  openedById  String             @map("opened_by_id") @db.Uuid
+  status      DisputeStatus      @default(open)
+  resolution  DisputeResolution?
+  resolutionNote String?        @map("resolution_note")
+  partialRefundAmount Decimal?  @map("partial_refund_amount") @db.Decimal(36, 18)
+  createdAt   DateTime           @default(now()) @map("created_at")
+  updatedAt   DateTime           @updatedAt @map("updated_at")
+  resolvedAt  DateTime?          @map("resolved_at")
+
+  deal       Deal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  openedBy   User @relation("DisputeOpenedBy", fields: [openedById], references: [id])
+  evidence   DisputeEvidence[]
+
+  @@index([dealId])
+  @@index([status])
+  @@map("disputes")
+}
+
+model DisputeEvidence {
+  id         String   @id @default(uuid()) @db.Uuid
+  disputeId  String   @map("dispute_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  message    String
+  fileId     String?  @map("file_id")
+  fileType   String?  @map("file_type")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  dispute Dispute @relation(fields: [disputeId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([disputeId])
+  @@map("dispute_evidence")
+}
+
+model Review {
+  id        String   @id @default(uuid()) @db.Uuid
+  dealId    String   @map("deal_id") @db.Uuid
+  fromUserId String  @map("from_user_id") @db.Uuid
+  toUserId  String   @map("to_user_id") @db.Uuid
+  stars     Int
+  text      String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  deal   Deal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  fromUser User @relation("ReviewFrom", fields: [fromUserId], references: [id])
+  toUser   User @relation("ReviewTo", fields: [toUserId], references: [id])
+
+  @@unique([dealId, fromUserId])
+  @@index([toUserId])
+  @@map("reviews")
+}
+
+model FeeSetting {
+  id            String   @id @default(uuid()) @db.Uuid
+  percentage    Decimal  @default(0.01) @db.Decimal(10, 6)
+  minimumUsd    Decimal  @default(1) @map("minimum_usd") @db.Decimal(18, 2)
+  maximumUsd    Decimal? @map("maximum_usd") @db.Decimal(18, 2)
+  fixedUsd      Decimal  @default(0) @map("fixed_usd") @db.Decimal(18, 2)
+  defaultFeePayer FeePayer @default(split) @map("default_fee_payer")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("fee_settings")
+}
+
+model SupportedCoin {
+  id           String   @id @default(uuid()) @db.Uuid
+  currency     String
+  network      String
+  enabled      Boolean  @default(true)
+  confirmationsRequired Int @default(12) @map("confirmations_required")
+  paymentTimeoutMinutes Int @default(60) @map("payment_timeout_minutes")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@unique([currency, network])
+  @@map("supported_coins")
+}
+
+model AdminActionLog {
+  id               String   @id @default(uuid()) @db.Uuid
+  adminTelegramId  BigInt   @map("admin_telegram_id")
+  action           String
+  dealId           String?  @map("deal_id") @db.Uuid
+  targetTelegramId BigInt?  @map("target_telegram_id")
+  metadata         Json?
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([adminTelegramId])
+  @@index([createdAt])
+  @@map("admin_action_logs")
+}
+
+model BotSetting {
+  id    String @id @default(uuid()) @db.Uuid
+  key   String @unique
+  value String
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("bot_settings")
+}
+
+model NotificationLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  channel   String
+  type      String
+  payload   Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("notification_logs")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String?  @map("user_id") @db.Uuid
+  dealId    String?  @map("deal_id") @db.Uuid
+  eventType String   @map("event_type")
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([dealId])
+  @@index([eventType, createdAt])
+  @@map("audit_logs")
+}
+
+model SupportTicket {
+  id         String              @id @default(uuid()) @db.Uuid
+  userId     String              @map("user_id") @db.Uuid
+  dealCode   String?             @map("deal_code")
+  issueType  String              @map("issue_type")
+  message    String
+  fileId     String?             @map("file_id")
+  status     SupportTicketStatus @default(open)
+  createdAt  DateTime            @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("support_tickets")
+}
+
+model WebhookEvent {
+  id             String   @id @default(uuid()) @db.Uuid
+  provider       String
+  idempotencyKey String   @unique @map("idempotency_key")
+  payloadHash    String   @map("payload_hash")
+  processedAt    DateTime @default(now()) @map("processed_at")
+
+  @@map("webhook_events")
+}
+
+model DealCodeCounter {
+  year Int @id
+  last Int @default(0)
+
+  @@map("deal_code_counters")
+}
+
+model ReportCodeCounter {
+  year Int @id
+  last Int @default(0)
+
+  @@map("report_code_counters")
+}
