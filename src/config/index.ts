@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+/** `.env` often has `KEY=` — treat blank as unset for optional URL fields. */
+function emptyToUndefinedUrl(v: unknown): unknown {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v === "string" && v.trim() === "") return undefined;
+  return v;
+}
+
 const envSchema = z
   .object({
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -21,8 +28,8 @@ const envSchema = z
     NOWPAYMENTS_API_KEY: z.string().optional(),
     NOWPAYMENTS_IPN_SECRET: z.string().optional(),
     /** Override API host (default https://api.nowpayments.io). */
-    NOWPAYMENTS_API_BASE: z.string().url().optional(),
-    PUBLIC_BASE_URL: z.string().url().optional(),
+    NOWPAYMENTS_API_BASE: z.preprocess(emptyToUndefinedUrl, z.string().url().optional()),
+    PUBLIC_BASE_URL: z.preprocess(emptyToUndefinedUrl, z.string().url().optional()),
     AUTO_RELEASE_ENABLED: z.coerce.boolean().default(false),
     /** After escrow payment confirms, DM buyer each delivery file_id from the deal (if false, only a Download button). */
     AUTO_SEND_DELIVERY_AFTER_PAYMENT: z.coerce.boolean().default(true),
