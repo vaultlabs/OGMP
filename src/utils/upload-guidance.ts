@@ -12,3 +12,14 @@ You can:
 export function formatUploadContinuationPlain(finishHint: string): string {
   return `Send another file, a .zip / .rar / .7z archive, or ${finishHint}.`;
 }
+
+/** After a text note is saved in Deal room mode (plain text). */
+export function formatDealRoomTextSavedPlain(): string {
+  return [
+    "What's next:",
+    "• Send another text note or a file for this same deal, or",
+    "• Type /done_room when you're done here — then you can use the menu (Create deal, View deal, etc.) again.",
+    "",
+    "If you meant to create a new deal but see this message, you were still in Deal room mode: send /done_room first, then tap Create deal or send /create.",
+  ].join("\n");
+}

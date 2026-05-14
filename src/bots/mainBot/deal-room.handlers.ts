@@ -10,6 +10,7 @@ import { findUserByTelegramId } from "../../modules/users/user.service.js";
 import { prisma } from "../../db/prisma.js";
 import type { DealMessageType } from "@prisma/client";
 import {
+  formatDealRoomTextSavedPlain,
   formatUploadContinuationPlain,
 } from "../../utils/upload-guidance.js";
 import { assertFileAllowed } from "../../utils/file-safety.js";
@@ -55,7 +56,13 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
   bot.command("done_room", async (ctx) => {
     if (!ctx.from) return;
     await clearActiveDealRoom(BigInt(ctx.from.id));
-    await ctx.reply("Deal room mode ended.");
+    await ctx.reply(
+      [
+        "Deal room mode ended.",
+        "",
+        "What's next: open a deal from My deals / the menu, or start a new one with Create deal or /create.",
+      ].join("\n"),
+    );
   });
 
   bot.on("message:text", async (ctx, next) => {
@@ -76,7 +83,9 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
         messageType: "text",
         text: ctx.message.text,
       });
-      await ctx.reply("Message saved.");
+      await ctx.reply(
+        ["Message saved to this deal's Delivery log (Deal room).", "", formatDealRoomTextSavedPlain()].join("\n"),
+      );
     } catch (e) {
       await ctx.reply(String((e as Error).message));
     }
