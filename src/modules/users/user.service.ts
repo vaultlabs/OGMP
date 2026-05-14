@@ -1,12 +1,18 @@
 import type { User } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
+import { appendSuspiciousFlag } from "../../services/suspicion-flags.service.js";
 
 export async function upsertTelegramUser(input: {
   telegramId: bigint;
   username?: string;
   firstName?: string;
 }): Promise<User> {
-  return prisma.user.upsert({
+  const existing = await prisma.user.findUnique({ where: { telegramId: input.telegramId } });
+  const oldUn = existing?.username ?? "";
+  const newUn = input.username ?? "";
+  const changed = !!existing && oldUn !== newUn;
+
+  const user = await prisma.user.upsert({
     where: { telegramId: input.telegramId },
     create: {
       telegramId: input.telegramId,
@@ -16,8 +22,13 @@ export async function upsertTelegramUser(input: {
     update: {
       username: input.username,
       firstName: input.firstName,
+      ...(changed ? { usernameChangeCount: { increment: 1 }, lastSeenUsername: newUn || oldUn || null } : {}),
     },
   });
+  if (changed && user.usernameChangeCount >= 4) {
+    void appendSuspiciousFlag(user.id, "USERNAME_CHURN", `to=${newUn}`).catch(() => {});
+  }
+  return user;
 }
 
 export async function acceptTermsForUser(telegramId: bigint): Promise<User> {

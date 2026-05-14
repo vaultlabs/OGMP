@@ -1,12 +1,13 @@
 import { Bot, Context, InlineKeyboard, InputFile } from "grammy";
 import { loadConfig, isAdminTelegramId, getMainBotToken, getReportBotToken } from "../../config/index.js";
 import { logger } from "../../utils/logger.js";
-import { replyTextForCaughtError } from "../../utils/user-facing-errors.js";
+import { replyTextForCaughtError, GENERIC_TRY_AGAIN } from "../../utils/user-facing-errors.js";
 import { redisIncrWithTtl } from "../../utils/redis.js";
 import { prisma } from "../../db/prisma.js";
-import type { ParticipantRole, User } from "@prisma/client";
+import type { ParticipantRole, User, PayoutStatus } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import { gatewayAccessMiddleware } from "./gatewayAccess.middleware.js";
+import { maintenanceMiddleware } from "./maintenance.middleware.js";
 import {
   deleteGatewaySetting,
   GATEWAY_SETTING_KEYS,
@@ -47,6 +48,7 @@ import {
   TRUST_OPS_FOOTER,
   WHY_TRUST_PAGE,
   supportPageText,
+  ANTI_IMPERSONATION_HTML,
 } from "./trust-copy.js";
 import {
   acceptTerms,
@@ -74,13 +76,30 @@ import {
 } from "./create-deal-wizard.js";
 import { supportTicketSchema } from "../../modules/deals/deal.validation.js";
 import {
+  adminApproveHighValueDeal,
   adminCancelDeal,
   adminForceRefund,
   adminForceRelease,
+  adminRejectHighValueDeal,
+  adminUpdateManualPayout,
   exportDealsCsv,
 } from "../../modules/admin/admin.service.js";
 import { applyReview, appendReviewOptionalText } from "../../services/reputation.service.js";
 import { formatReceiptHtml, rateButtons } from "../../services/deal-completion-notify.service.js";
+import { buildDealCaseExportText } from "../../services/deal-case-export.service.js";
+import { buildSystemStatusLines } from "../../services/system-status.service.js";
+import {
+  getDealLimits,
+  getOfficialSupportUsernames,
+  setDealLimitsJson,
+  setHighValueThresholdUsd,
+  setMaintenanceEnabled,
+  setMaintenanceMessage,
+  setOfficialSupportUsernames,
+  setRequireHighValueApproval,
+  setRequirePayoutDoubleConfirm,
+  type DealLimitsJson,
+} from "../../services/platform-settings.service.js";
 import { getAdminDashboardSnapshot } from "../../modules/admin/admin-dashboard.service.js";
 import {
   clearBroadcastDraft,
@@ -131,7 +150,9 @@ function mainMenuKb(isAdmin: boolean): InlineKeyboard {
     .text("Support", "m:support")
     .row()
     .text("Safety rules", "m:safety")
-    .text("Terms", "m:terms");
+    .text("Terms", "m:terms")
+    .row()
+    .text("System status", "m:status");
   if (isAdmin) kb.row().text("Admin", "m:admin");
   return kb;
 }
@@ -154,7 +175,7 @@ async function fmtDealCard(dealId: string, viewerUserId: string | null = null): 
   if (!d) return e("Deal not found.");
   const buyer = d.buyer ? fmtUserLine(d.buyer) : "(pending)";
   const seller = d.seller ? fmtUserLine(d.seller) : "(pending)";
-  const [sellerLockedCount, msgCount, lastEv, pay] = await Promise.all([
+  const [sellerLockedCount, msgCount, lastEv, pay, participants] = await Promise.all([
     d.sellerId
       ? prisma.dealMessage.count({
           where: { dealId, lockedForBuyer: true, senderId: d.sellerId },
@@ -166,7 +187,12 @@ async function fmtDealCard(dealId: string, viewerUserId: string | null = null): 
       orderBy: { createdAt: "desc" },
     }),
     prisma.payment.findFirst({ where: { dealId }, orderBy: { createdAt: "desc" } }),
+    prisma.dealParticipant.findMany({ where: { dealId } }),
   ]);
+  const buyerAccepted =
+    !!d.buyerId && participants.some((p) => p.userId === d.buyerId && p.termsAcceptedAt);
+  const sellerAccepted =
+    !!d.sellerId && participants.some((p) => p.userId === d.sellerId && p.termsAcceptedAt);
   const displayStatus = userFacingDealStatus(d, {
     hasLockedDelivery: sellerLockedCount > 0,
     paymentStatus: pay?.status ?? null,
@@ -195,6 +221,8 @@ async function fmtDealCard(dealId: string, viewerUserId: string | null = null): 
     d.activeReport
       ? `<b>Case Review</b>: ${e(d.activeReport.reportCode)} (${e(d.activeReport.status.replace(/_/g, " "))})`
       : "<b>Case Review</b>: none open",
+    `<b>Buyer accepted</b>: ${buyerAccepted ? "Yes" : "No"}`,
+    `<b>Seller accepted</b>: ${sellerAccepted ? "Yes" : "No"}`,
     `<b>Files submitted</b>: ${String(msgCount)}`,
     "Folders: send .zip / .rar / .7z or one file per message (no folder upload).",
     `<b>Last activity</b>: ${e(d.lastActivityAt.toISOString().slice(0, 19))}Z`,
@@ -202,6 +230,20 @@ async function fmtDealCard(dealId: string, viewerUserId: string | null = null): 
     `<b>Terms</b>:
 ${e(termsPreview)}`,
   ];
+  if (d.highValueApproval === "pending") {
+    lines.push(
+      "",
+      "<b>High value review</b>: admin approval is required before a payment address can be shown.",
+    );
+  }
+  if (d.cancelRequestedByBuyer || d.cancelRequestedBySeller) {
+    lines.push(
+      "",
+      `<b>Cancel requests</b>: buyer ${d.cancelRequestedByBuyer ? "yes" : "no"} · seller ${
+        d.cancelRequestedBySeller ? "yes" : "no"
+      } (both must request to cancel before payment activity)`,
+    );
+  }
   if (lastEv) lines.push(`<b>Latest event</b>: ${e(lastEv.eventType)}`);
   if (d.paymentAddress && d.status !== "pending_acceptance") {
     if (hideEscrowFromBuyer) {
@@ -217,6 +259,8 @@ ${e(termsPreview)}`,
         `<code>${e(d.paymentAddress)}</code>`,
         `<b>Exact amount</b>: ${e(d.amount.toString())} ${e(d.currency)} on ${e(d.network)}`,
         `<i>${e("Wrong network = loss. Never pay outside OGMP MM.")}</i>`,
+        "",
+        ANTI_IMPERSONATION_HTML,
       );
     }
   }
@@ -235,15 +279,7 @@ export function createMainBot(): Bot<Context> {
       err: String(err.error),
     });
     void err.ctx
-      .reply(
-        [
-          "Something went wrong while handling that.",
-          "",
-          "What to try: open My deals from the menu, or send /start. If it keeps happening, wait a few minutes and try again.",
-          "",
-          "Do not paste API keys, bot tokens, wallet seeds, or payment provider secrets in this chat.",
-        ].join("\n"),
-      )
+      .reply(GENERIC_TRY_AGAIN)
       .catch(() => {});
   });
 
@@ -268,6 +304,8 @@ export function createMainBot(): Bot<Context> {
     }
     await next();
   });
+
+  bot.use(maintenanceMiddleware);
 
   bot.use(gatewayAccessMiddleware);
 
@@ -596,6 +634,44 @@ export function createMainBot(): Bot<Context> {
     if (deal.status === "pending_acceptance" || deal.status === "waiting_payment") {
       kb.text("Request cancel", `d:cx:${deal.dealCode}`).row();
     }
+    const showPayCopy =
+      !!deal.paymentAddress &&
+      !(
+        deal.buyerId === u.id &&
+        lockedPre === 0 &&
+        (deal.status === "waiting_payment" || deal.status === "payment_detected")
+      );
+    if (showPayCopy) {
+      kb.row()
+        .text("Copy amount", `cpy:amt:${deal.dealCode}`)
+        .text("Copy address", `cpy:addr:${deal.dealCode}`)
+        .text("Copy Deal ID", `cpy:did:${deal.dealCode}`);
+    } else {
+      kb.row().text("Copy Deal ID", `cpy:did:${deal.dealCode}`);
+    }
+    if (deal.txHash) {
+      kb.text("Copy tx", `cpy:tx:${deal.dealCode}`);
+    }
+    const payoutFlow: (typeof deal.status)[] = [
+      "pending_acceptance",
+      "waiting_payment",
+      "payment_detected",
+      "funded",
+      "item_delivered",
+      "buyer_confirmed",
+      "release_requested",
+    ];
+    if (
+      deal.sellerId === u.id &&
+      deal.sellerPayoutAddress?.trim() &&
+      !deal.sellerPayoutConfirmedAt &&
+      payoutFlow.includes(deal.status)
+    ) {
+      kb.row()
+        .text("Payout 1/3", `pc:1:${deal.dealCode}`)
+        .text("Payout 2/3", `pc:2:${deal.dealCode}`)
+        .text("Payout 3/3 ✓", `pc:3:${deal.dealCode}`);
+    }
     kb.row().text("Upload / Deal room", `dr:enter:${deal.dealCode}`).row();
     kb.text("Timeline", `d:tl:${deal.dealCode}`).text("Delivery log", `d:pr:${deal.dealCode}`).row();
     kb.text("Open Case", `d:rp:${deal.dealCode}`);
@@ -918,11 +994,97 @@ export function createMainBot(): Bot<Context> {
     if (!deal) return;
     try {
       const d = await cancelDeal(u.id, deal.id);
-      await ctx.answerCallbackQuery({ text: "Cancelled" });
-      await ctx.reply(`Deal ${d.dealCode} is now ${d.status}.`);
+      await ctx.answerCallbackQuery({
+        text: d.status === "cancelled" ? "Cancelled" : "Request saved",
+        show_alert: d.status !== "cancelled",
+      });
+      if (d.status === "cancelled") {
+        await ctx.reply(`Deal ${d.dealCode} is now cancelled (both parties agreed).`);
+      } else {
+        await ctx.reply(
+          [
+            "Cancellation request saved.",
+            "",
+            "Your counterparty must also tap Request cancel before the deal closes.",
+            "This only works before payment activity starts.",
+          ].join("\n"),
+        );
+      }
     } catch (e) {
       await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
     }
+  });
+
+  bot.callbackQuery(/^cpy:(amt|addr|did|tx):(.+)$/, async (ctx) => {
+    if (!ctx.from || !ctx.match) return;
+    const kind = ctx.match[1];
+    const code = ctx.match[2]!;
+    const deal = await prisma.deal.findUnique({ where: { dealCode: code } });
+    const u = await requireUser(ctx);
+    if (!u || !deal) {
+      await ctx.answerCallbackQuery({ text: "Not found", show_alert: true });
+      return;
+    }
+    if (deal.buyerId !== u.id && deal.sellerId !== u.id && deal.creatorId !== u.id) {
+      await ctx.answerCallbackQuery({ text: "Forbidden", show_alert: true });
+      return;
+    }
+    let out = "";
+    if (kind === "amt") out = `${deal.amount.toString()} ${deal.currency}`;
+    else if (kind === "addr") out = deal.paymentAddress ?? "—";
+    else if (kind === "did") out = deal.dealCode;
+    else out = deal.txHash ?? "—";
+    await ctx.answerCallbackQuery({ text: "Copied in chat" });
+    await ctx.reply(`<code>${escapeTelegramHtml(out)}</code>`, { parse_mode: "HTML" });
+  });
+
+  bot.callbackQuery(/^pc:([1-3]):(.+)$/, async (ctx) => {
+    if (!ctx.from || !ctx.match) return;
+    const step = ctx.match[1]!;
+    const code = ctx.match[2]!;
+    const u = await requireUser(ctx);
+    const deal = await prisma.deal.findUnique({ where: { dealCode: code } });
+    if (!u || !deal || deal.sellerId !== u.id) {
+      await ctx.answerCallbackQuery({ text: "Seller only", show_alert: true });
+      return;
+    }
+    if (!deal.sellerPayoutAddress?.trim()) {
+      await ctx.answerCallbackQuery({ text: "Set payout address first", show_alert: true });
+      return;
+    }
+    if (step === "1") {
+      await ctx.answerCallbackQuery({ text: "Step 1" });
+      await ctx.reply(
+        [
+          "<b>Payout check 1/3</b>",
+          `Network: <b>${escapeTelegramHtml(deal.network)}</b>`,
+          "",
+          "Confirm this matches the chain you control for payout.",
+        ].join("\n"),
+        { parse_mode: "HTML" },
+      );
+      return;
+    }
+    if (step === "2") {
+      await ctx.answerCallbackQuery({ text: "Step 2" });
+      await ctx.reply(
+        [
+          "<b>Payout check 2/3</b>",
+          "Address on file:",
+          `<code>${escapeTelegramHtml(deal.sellerPayoutAddress)}</code>`,
+          "",
+          "Wrong network or address can mean permanent loss.",
+        ].join("\n"),
+        { parse_mode: "HTML" },
+      );
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: "Confirmed" });
+    await prisma.deal.update({
+      where: { id: deal.id },
+      data: { sellerPayoutConfirmedAt: new Date() },
+    });
+    await ctx.reply("Payout wallet confirmation saved. Releases can proceed when other steps are complete.");
   });
 
   bot.callbackQuery(/^m:profile$/, async (ctx) => {
@@ -978,7 +1140,12 @@ export function createMainBot(): Bot<Context> {
     if (h) kb.url("Contact Support", `https://t.me/${h}`);
     else kb.text("Contact Support", "m:supportfmt");
     kb.row().text("View Safety Rules", "m:safety").text("Back", "m:menu");
-    await ctx.reply(supportPageText(cfg.SUPPORT_USERNAME), {
+    const official = await getOfficialSupportUsernames();
+    const extra =
+      official.length > 0
+        ? ["", "<b>Official admins</b>", ...official.map((u) => `• @${escapeTelegramHtml(u)}`)].join("\n")
+        : "";
+    await ctx.reply(supportPageText(cfg.SUPPORT_USERNAME) + extra, {
       parse_mode: MAIN_UI_PARSE_MODE,
       reply_markup: kb,
     });
@@ -990,6 +1157,15 @@ export function createMainBot(): Bot<Context> {
       "Send `/support <issue_type> | <message> | optional_deal_code` (pipe-separated). You may attach a photo after sending the text.",
       { reply_markup: new InlineKeyboard().text("Back", "m:support") },
     );
+  });
+
+  bot.callbackQuery(/^m:status$/, async (ctx) => {
+    if (!ctx.from) return;
+    await ctx.answerCallbackQuery();
+    const lines = await buildSystemStatusLines(isAdminTelegramId(BigInt(ctx.from.id)));
+    await ctx.reply(lines.join("\n"), {
+      reply_markup: new InlineKeyboard().text("Back", "m:menu"),
+    });
   });
 
   bot.callbackQuery(/^m:terms$/, async (ctx) => {
@@ -1028,6 +1204,13 @@ export function createMainBot(): Bot<Context> {
         "━━━━━━━━━━━━━━━━━━",
         "",
         "Pick a tool below. Dashboard shows live counters.",
+        "",
+        "Text commands:",
+        "/admin_maint_on · /admin_maint_off · /admin_maint_msg …",
+        "/admin_limits_show · /admin_limits_set {json}",
+        "/admin_hv_approve CODE · /admin_hv_reject CODE · /admin_hv_threshold · /admin_hv_require on|off",
+        "/admin_export_deal CODE · /admin_payout_update CODE status [tx] [note]",
+        "/admin_official @handles · /admin_double_payout on|off",
         "",
         TRUST_OPS_FOOTER,
       ].join("\n"),
@@ -1800,6 +1983,192 @@ export function createMainBot(): Bot<Context> {
     } catch {
       await ctx.reply("Invalid id");
     }
+  });
+
+  bot.command("admin_maint_on", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    await setMaintenanceEnabled(true);
+    await ctx.reply("Maintenance mode ON — users cannot start new deals.");
+  });
+
+  bot.command("admin_maint_off", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    await setMaintenanceEnabled(false);
+    await ctx.reply("Maintenance mode OFF.");
+  });
+
+  bot.command("admin_maint_msg", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const text = ctx.message?.text?.replace(/^\/admin_maint_msg(?:@\w+)?\s*/i, "").trim() ?? "";
+    if (!text) {
+      await ctx.reply("Usage: `/admin_maint_msg Your short message…`");
+      return;
+    }
+    await setMaintenanceMessage(text);
+    await ctx.reply("Maintenance message saved.");
+  });
+
+  bot.command("admin_limits_show", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const lim = await getDealLimits();
+    await ctx.reply(JSON.stringify(lim, null, 2));
+  });
+
+  bot.command("admin_limits_set", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const raw = ctx.message?.text?.replace(/^\/admin_limits_set(?:@\w+)?\s*/i, "").trim() ?? "";
+    if (!raw) {
+      await ctx.reply("Usage: `/admin_limits_set {\"maxNewUserUsd\":\"250\"}`");
+      return;
+    }
+    try {
+      const obj = JSON.parse(raw) as DealLimitsJson;
+      await setDealLimitsJson(obj);
+      await ctx.reply("Deal limits updated.");
+    } catch {
+      await ctx.reply("Invalid JSON.");
+    }
+  });
+
+  bot.command("admin_hv_approve", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const code = ctx.message?.text?.split(/\s+/)[1];
+    if (!code) {
+      await ctx.reply("Usage: `/admin_hv_approve DEALCODE`");
+      return;
+    }
+    try {
+      await adminApproveHighValueDeal(code, BigInt(ctx.from.id));
+      await ctx.reply("Approved — payment address will be issued if terms are complete.");
+    } catch (e) {
+      await ctx.reply(replyTextForCaughtError(e));
+    }
+  });
+
+  bot.command("admin_hv_reject", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const code = ctx.message?.text?.split(/\s+/)[1];
+    if (!code) {
+      await ctx.reply("Usage: `/admin_hv_reject DEALCODE`");
+      return;
+    }
+    try {
+      await adminRejectHighValueDeal(code, BigInt(ctx.from.id));
+      await ctx.reply("High-value approval rejected for this deal.");
+    } catch (e) {
+      await ctx.reply(replyTextForCaughtError(e));
+    }
+  });
+
+  bot.command("admin_export_deal", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const code = ctx.message?.text?.split(/\s+/)[1];
+    if (!code) {
+      await ctx.reply("Usage: `/admin_export_deal DEALCODE`");
+      return;
+    }
+    const txt = await buildDealCaseExportText(code);
+    await ctx.replyWithDocument(new InputFile(Buffer.from(txt, "utf8"), `case-${code}.txt`));
+  });
+
+  bot.command("admin_payout_update", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const parts = ctx.message?.text?.trim().split(/\s+/) ?? [];
+    const code = parts[1];
+    const status = parts[2] as PayoutStatus | undefined;
+    const tx = parts[3];
+    const note = parts.slice(4).join(" ") || undefined;
+    if (!code || !status) {
+      await ctx.reply("Usage: `/admin_payout_update DEALCODE pending|processing|completed|failed [txhash] [note]`");
+      return;
+    }
+    const deal = await prisma.deal.findUnique({ where: { dealCode: code } });
+    if (!deal) {
+      await ctx.reply("Deal not found");
+      return;
+    }
+    try {
+      await adminUpdateManualPayout({
+        dealId: deal.id,
+        adminTelegramId: BigInt(ctx.from.id),
+        status,
+        txHash: tx,
+        adminNote: note,
+      });
+      await ctx.reply("Payout record updated.");
+    } catch (e) {
+      await ctx.reply(replyTextForCaughtError(e));
+    }
+  });
+
+  bot.command("admin_official", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const parts = ctx.message?.text?.trim().split(/\s+/) ?? [];
+    const users = parts.slice(1);
+    if (!users.length) {
+      await ctx.reply("Usage: `/admin_official @alice @bob`");
+      return;
+    }
+    await setOfficialSupportUsernames(users);
+    await ctx.reply("Official support usernames saved.");
+  });
+
+  bot.command("admin_double_payout", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const v = ctx.message?.text?.split(/\s+/)[1]?.toLowerCase();
+    if (v !== "on" && v !== "off") {
+      await ctx.reply("Usage: `/admin_double_payout on` or `off`");
+      return;
+    }
+    await setRequirePayoutDoubleConfirm(v === "on");
+    await ctx.reply(`Double payout confirm: ${v}`);
+  });
+
+  bot.command("admin_hv_threshold", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const v = ctx.message?.text?.split(/\s+/)[1];
+    if (!v) {
+      await ctx.reply("Usage: `/admin_hv_threshold 5000`");
+      return;
+    }
+    await setHighValueThresholdUsd(v);
+    await ctx.reply("High value threshold (USD notional) saved.");
+  });
+
+  bot.command("admin_hv_require", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const v = ctx.message?.text?.split(/\s+/)[1]?.toLowerCase();
+    if (v !== "on" && v !== "off") {
+      await ctx.reply("Usage: `/admin_hv_require on|off`");
+      return;
+    }
+    await setRequireHighValueApproval(v === "on");
+    await ctx.reply(`High value admin approval: ${v}`);
+  });
+
+  bot.command("finddeal", async (ctx) => {
+    if (!ctx.from) return;
+    const me = await requireUser(ctx);
+    if (!me) return;
+    const q = ctx.message?.text?.replace(/^\/finddeal(?:@\w+)?\s*/i, "").trim() ?? "";
+    if (!q) {
+      await ctx.reply("Usage: `/finddeal OGMP` (matches deal code). Admins see all deals; users see only theirs.");
+      return;
+    }
+    const admin = isAdminTelegramId(BigInt(ctx.from.id));
+    const deals = await prisma.deal.findMany({
+      where: {
+        dealCode: { contains: q, mode: "insensitive" },
+        ...(admin
+          ? {}
+          : { OR: [{ buyerId: me.id }, { sellerId: me.id }, { creatorId: me.id }] }),
+      },
+      take: 20,
+      orderBy: { createdAt: "desc" },
+    });
+    await ctx.reply(
+      deals.length ? deals.map((d) => `${d.dealCode} — ${d.status}`).join("\n") : "No matches.",
+    );
   });
 
   bot.callbackQuery(/^rstar:(.+):(B|S):([1-5])$/, async (ctx) => {

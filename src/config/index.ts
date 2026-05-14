@@ -40,6 +40,9 @@ const envSchema = z
     PLATFORM_FEE_PERCENT: z.string().optional(),
     MIN_FEE: z.string().optional(),
     MAX_FEE: z.string().optional(),
+    /** Decimal string in USD notional for high-value admin gate (optional; DB can override). */
+    HIGH_VALUE_DEAL_THRESHOLD: z.string().optional(),
+    REQUIRE_ADMIN_APPROVAL_FOR_HIGH_VALUE: z.coerce.boolean().default(false),
     /** Run BullMQ notification worker in-process */
     NOTIFICATION_WORKER_ENABLED: z.coerce.boolean().default(true),
     /** Require joining OGMP gateway before using the escrow bot (overridable via BotSetting). */

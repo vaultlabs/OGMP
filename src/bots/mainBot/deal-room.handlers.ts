@@ -15,6 +15,7 @@ import {
 } from "../../utils/upload-guidance.js";
 import { assertFileAllowed } from "../../utils/file-safety.js";
 import { replyTextForCaughtError } from "../../utils/user-facing-errors.js";
+import { redisIncrWithTtl } from "../../utils/redis.js";
 import {
   notifyBuyerPaymentRequired,
   sellerFileSecuredKeyboard,
@@ -112,6 +113,13 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
     const deal = await prisma.deal.findUnique({ where: { id: dealId } });
     if (!deal) return;
     const hasFile = !!fileId;
+    if (hasFile) {
+      const ul = await redisIncrWithTtl(`rl:ul:${dealId}`, 60);
+      if (ul > 30) {
+        await ctx.reply("Too many uploads for this deal in a short window. Please wait a minute.");
+        return;
+      }
+    }
     const sellerLocked =
       deal.sellerId === u.id &&
       hasFile &&

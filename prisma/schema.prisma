@@ -111,6 +111,11 @@ model User {
   telegramId       BigInt    @unique @map("telegram_id")
   username         String?
   firstName        String?   @map("first_name")
+  /** JSON: { dealUpdates, paymentUpdates, reportUpdates, announcements } booleans */
+  notificationPrefs Json    @default("{}") @map("notification_prefs")
+  /** For suspicious-activity: username churn detection */
+  lastSeenUsername String?   @map("last_seen_username")
+  usernameChangeCount Int    @default(0) @map("username_change_count")
   termsAcceptedAt  DateTime? @map("terms_accepted_at")
   /** User completed gateway flow (Continue). */
   gatewayAcceptedAt DateTime? @map("gateway_accepted_at")
@@ -147,6 +152,7 @@ model User {
   reportsSubmitted    Report[]          @relation("ReportReporter")
   reportSessions      ReportSession[]
   reportEvidence      ReportEvidence[]
+  savedWallets        SavedWallet[]
 
   @@map("users")
 }
@@ -195,6 +201,18 @@ model Deal {
   lastActivityAt   DateTime    @default(now()) @map("last_activity_at")
   createdAt        DateTime    @default(now()) @map("created_at")
   updatedAt        DateTime    @updatedAt @map("updated_at")
+  /** null | pending | approved | rejected — payment address only after approved when required */
+  highValueApproval String?    @map("high_value_approval")
+  /** Counterparty must join before this instant or deal auto-cancels (pending_acceptance). */
+  joinExpiresAt     DateTime?   @map("join_expires_at")
+  /** Both parties must accept terms before this instant or deal auto-cancels. */
+  termsExpiresAt    DateTime?   @map("terms_expires_at")
+  /** Seller confirmed payout wallet (anti fat-finger flow). */
+  sellerPayoutConfirmedAt DateTime? @map("seller_payout_confirmed_at")
+  cancelRequestedByBuyer   Boolean @default(false) @map("cancel_requested_by_buyer")
+  cancelRequestedBySeller  Boolean @default(false) @map("cancel_requested_by_seller")
+  buyerPayRemindedAt       DateTime? @map("buyer_pay_reminded_at")
+  sellerUploadRemindedAt   DateTime? @map("seller_upload_reminded_at")
 
   buyer            User?       @relation("DealBuyer", fields: [buyerId], references: [id])
   seller           User?       @relation("DealSeller", fields: [sellerId], references: [id])
@@ -398,6 +416,8 @@ model Payout {
   status      PayoutStatus @default(pending)
   txHash      String?      @map("tx_hash")
   providerRef String?      @map("provider_ref")
+  adminNote   String?      @map("admin_note")
+  sellerNotifiedSentAt DateTime? @map("seller_notified_sent_at")
   createdAt   DateTime     @default(now()) @map("created_at")
   updatedAt   DateTime     @updatedAt @map("updated_at")
 
@@ -571,6 +591,24 @@ model DealCodeCounter {
   last Int @default(0)
 
   @@map("deal_code_counters")
+}
+
+/** User-saved payout / refund addresses (seller picks per deal before release). */
+model SavedWallet {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  /** e.g. USDT_TRC20, BTC, ETH, LTC, USDT_ERC20 */
+  kind      String   @map("kind") @db.VarChar(32)
+  label     String?  @db.VarChar(64)
+  currency  String   @db.VarChar(16)
+  network   String   @db.VarChar(32)
+  address   String   @db.VarChar(256)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("saved_wallets")
 }
 
 model ReportCodeCounter {

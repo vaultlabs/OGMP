@@ -199,6 +199,10 @@ Polling fallback: `src/jobs/paymentWatcher.job.ts` runs on an interval from `src
 
 - Schedule `pg_dump` (or managed-backup snapshots) of the PostgreSQL volume (`pgdata` in compose).
 - Test restores regularly; escrow state + audit tables are your source of truth in disputes.
+- **Redis**: persistence depends on deployment (`appendonly` for Redis stack, or accept wizard/session loss on wipe). Document whether you treat Redis as durable or ephemeral.
+- **Secrets**: keep `.env` / deployment secrets out of git; rotate `WEBHOOK_SECRET`, bot tokens, and payment provider keys on any leak.
+- **Restore**: restore Postgres from dump, redeploy app with same `DATABASE_URL`, run `npx prisma migrate deploy`, then restart workers/bots. Reconcile in-flight payments with your provider dashboard after any restore.
+- **Exports**: use `/admin_export_deal DEALCODE` for a plain-text case bundle (timeline, payments, evidence metadata).
 
 ## Logging
 

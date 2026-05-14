@@ -109,10 +109,15 @@ export function supportPageText(supportUsername: string | undefined): string {
     "<b>Official contact</b>",
     `<a href="https://t.me/${handle}">@${handle}</a>`,
     "",
-    "<i>Only trust admins listed inside this bot.</i>",
+    ANTI_IMPERSONATION_HTML,
+    "",
+    "<i>Official admin roster is published from the bot settings (ask an admin if empty).</i>",
     footerHtml(),
   ].join("\n");
 }
+
+export const ANTI_IMPERSONATION_HTML =
+  "<i>Only trust messages from this official bot. OGMP admins will never ask you to pay outside the deal flow.</i>";
 
 export const REPORT_BOT_HOME_PAGE = [
   `<b>OGMP MM REPORT</b> · <i>Case Review</i>`,

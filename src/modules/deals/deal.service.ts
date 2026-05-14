@@ -17,6 +17,14 @@ import { loadConfig } from "../../config/index.js";
 import { isAutoReleaseEnabled } from "../../services/bot-settings.service.js";
 import { acquireLock, releaseLock } from "../../utils/redis.js";
 import { logger } from "../../utils/logger.js";
+import { assertDealLimitsForCreate } from "./deal-limits.service.js";
+import { resolveInitialHighValueApprovalKey } from "../../services/high-value-deal.service.js";
+import { appendSuspiciousFlag, flagHighValueNewUser, scanSharedPayoutAddress } from "../../services/suspicion-flags.service.js";
+import {
+  getJoinExpiryHours,
+  getRequirePayoutDoubleConfirm,
+  getTermsExpiryHours,
+} from "../../services/platform-settings.service.js";
 import type { createDealSchema } from "./deal.validation.js";
 import type { z } from "zod";
 
@@ -51,6 +59,13 @@ export async function createDeal(creator: User, input: CreateDealInput): Promise
   const dealCode = await allocateDealCode(year);
   const feeRow = await getActiveFeeSettings();
   const dealAmount = new PrismaNs.Decimal(input.amount);
+  await assertDealLimitsForCreate({
+    creatorId: creator.id,
+    amount: dealAmount,
+    currency: input.currency,
+  });
+  const joinExpiresAt = new Date(Date.now() + (await getJoinExpiryHours()) * 3600 * 1000);
+  const highValueApproval = await resolveInitialHighValueApprovalKey(dealAmount);
   const amountUsdForCaps = dealAmount; // TODO: FX rate service for non-USD notional caps
   const breakdown = computeFeeBreakdown({
     dealAmount,
@@ -90,6 +105,8 @@ export async function createDeal(creator: User, input: CreateDealInput): Promise
         sellerPayoutAddress: input.sellerPayoutAddress,
         buyerRefundAddress: input.buyerRefundAddress,
         status: "pending_acceptance",
+        joinExpiresAt,
+        highValueApproval,
       },
     });
     await tx.dealParticipant.create({
@@ -109,6 +126,10 @@ export async function createDeal(creator: User, input: CreateDealInput): Promise
     eventType: "deal_created",
     metadata: { dealCode: deal.dealCode },
   });
+  void flagHighValueNewUser(creator.id, deal.amount.toString()).catch(() => {});
+  if (input.sellerPayoutAddress) {
+    void scanSharedPayoutAddress(input.sellerPayoutAddress).catch(() => {});
+  }
   return deal;
 }
 
@@ -125,6 +146,7 @@ export async function joinDealByToken(joiner: User, token: string): Promise<Deal
   const buyerId = neededRole === "buyer" ? joiner.id : deal.buyerId;
   const sellerId = neededRole === "seller" ? joiner.id : deal.sellerId;
   if (!buyerId || !sellerId) throw new StateMachineError("Could not resolve buyer/seller");
+  const termsExpiresAt = new Date(Date.now() + (await getTermsExpiryHours()) * 3600 * 1000);
 
   await prisma.$transaction(async (tx) => {
     await tx.dealParticipant.upsert({
@@ -137,6 +159,7 @@ export async function joinDealByToken(joiner: User, token: string): Promise<Deal
       data: {
         buyerId,
         sellerId,
+        termsExpiresAt,
         version: { increment: 1 },
       },
     });
@@ -202,8 +225,32 @@ export async function acceptTerms(userId: string, dealId: string): Promise<Deal>
       metadata: { allAccepted },
     });
     if (updated.status === "waiting_payment") {
+      const hvPending = deal.highValueApproval === "pending";
       try {
-        return await ensurePaymentInstruction(updated.id);
+        const res = await ensurePaymentInstruction(updated.id);
+        if (hvPending && !res.paymentAddress) {
+          const full = await prisma.deal.findUnique({
+            where: { id: dealId },
+            include: { buyer: true, seller: true },
+          });
+          const line =
+            "This deal requires admin approval before payment can be accepted.";
+          if (full?.buyer) {
+            await enqueueDealParticipantNotify({
+              targetTelegramId: full.buyer.telegramId,
+              text: ["OGMP MM — High value review", "", line, "", `Deal: ${full.dealCode}`].join("\n"),
+              buttons: [[{ text: "View deal", cb: `d:v:${full.dealCode}` }]],
+            });
+          }
+          if (full?.seller) {
+            await enqueueDealParticipantNotify({
+              targetTelegramId: full.seller.telegramId,
+              text: ["OGMP MM — High value review", "", line, "", `Deal: ${full.dealCode}`].join("\n"),
+              buttons: [[{ text: "View deal", cb: `d:v:${full.dealCode}` }]],
+            });
+          }
+        }
+        return res;
       } catch (e) {
         const errStr = String(e);
         const payCfg = loadConfig().PAYMENT_PROVIDER;
@@ -254,6 +301,13 @@ export async function ensurePaymentInstruction(dealId: string): Promise<Deal> {
   if (!deal) throw new NotFoundError("Deal not found");
   if (deal.status !== "waiting_payment") return deal;
   if (deal.paymentAddress) return deal;
+  if (deal.highValueApproval === "pending") {
+    logger.info("payment_address_deferred_high_value", { dealId });
+    return deal;
+  }
+  if (deal.highValueApproval === "rejected") {
+    return deal;
+  }
 
   const coin = await prisma.supportedCoin.findFirst({
     where: { currency: deal.currency, network: deal.network, enabled: true },
@@ -381,6 +435,16 @@ export async function buyerConfirmRelease(buyerId: string, dealId: string): Prom
   assertNotFrozen(deal);
   if (deal.buyerId !== buyerId) throw new ForbiddenError("Only the buyer can confirm release");
   if (deal.status !== "item_delivered") throw new StateMachineError("Invalid state for release confirm");
+  if (!deal.sellerPayoutAddress?.trim()) {
+    throw new StateMachineError(
+      "Seller payout wallet is missing. Ask the seller to set a payout address before you confirm release.",
+    );
+  }
+  if ((await getRequirePayoutDoubleConfirm()) && !deal.sellerPayoutConfirmedAt) {
+    throw new StateMachineError(
+      "Seller must complete payout wallet checks on the deal card before you can confirm release.",
+    );
+  }
   const suspiciousHold =
     hasActiveSuspiciousFlags(deal.buyer?.suspiciousFlags) ||
     hasActiveSuspiciousFlags(deal.seller?.suspiciousFlags);
@@ -485,6 +549,10 @@ export async function openDispute(openerId: string, dealId: string): Promise<voi
     metadata: { source: "in_bot_dispute" },
   });
   await applyDealDisputedStats(d);
+  const disputeOpens = await prisma.dispute.count({ where: { openedById: openerId } });
+  if (disputeOpens >= 3) {
+    void appendSuspiciousFlag(openerId, "FREQUENT_DISPUTES", `opened_count=${disputeOpens}`).catch(() => {});
+  }
   const notifyId = openerId === deal.buyerId ? deal.sellerId : deal.buyerId;
   if (notifyId) {
     const u = await prisma.user.findUnique({ where: { id: notifyId } });
@@ -507,12 +575,44 @@ export async function cancelDeal(requesterId: string, dealId: string): Promise<D
   if (deal.status !== "pending_acceptance" && deal.status !== "waiting_payment") {
     throw new StateMachineError("This deal can no longer be cancelled by participants");
   }
-  const to: DealStatus = "cancelled";
-  assertValidDealTransition(deal.status, to);
-  const updated = await prisma.deal.update({
+  const pay = await prisma.payment.findFirst({ where: { dealId }, orderBy: { createdAt: "desc" } });
+  const paymentInFlight =
+    deal.status === "waiting_payment" && pay != null && pay.status !== "pending";
+  if (paymentInFlight) {
+    throw new StateMachineError(
+      "After payment activity starts, cancellation must go through Case Review (Open Case) so an admin can decide.",
+    );
+  }
+  const isBuyer = deal.buyerId === requesterId;
+  const nextBuyerReq = isBuyer ? true : deal.cancelRequestedByBuyer;
+  const nextSellerReq = !isBuyer ? true : deal.cancelRequestedBySeller;
+  if (nextBuyerReq && nextSellerReq) {
+    assertValidDealTransition(deal.status, "cancelled");
+    const updated = await prisma.deal.update({
+      where: { id: dealId, version: deal.version },
+      data: {
+        status: "cancelled",
+        cancelledAt: new Date(),
+        cancelRequestedByBuyer: false,
+        cancelRequestedBySeller: false,
+        version: { increment: 1 },
+      },
+    });
+    await writeAuditLog({ eventType: "deal_cancelled", userId: requesterId, dealId });
+    await appendDealTimelineEvent({
+      dealId,
+      actorId: requesterId,
+      eventType: "deal_closed",
+      metadata: { reason: "mutual_cancel", buyerReq: nextBuyerReq, sellerReq: nextSellerReq },
+    });
+    return updated;
+  }
+  return prisma.deal.update({
     where: { id: dealId, version: deal.version },
-    data: { status: to, cancelledAt: new Date(), version: { increment: 1 } },
+    data: {
+      cancelRequestedByBuyer: nextBuyerReq,
+      cancelRequestedBySeller: nextSellerReq,
+      version: { increment: 1 },
+    },
   });
-  await writeAuditLog({ eventType: "deal_cancelled", userId: requesterId, dealId });
-  return updated;
 }
