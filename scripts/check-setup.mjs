@@ -97,8 +97,8 @@ if (reportTok) {
 console.log("");
 if (bad === 0) {
   const next = inCodespaces
-    ? "🎉 Looks good! Run:  npm run dev\n"
-    : "🎉 Looks good! Try:  npm run db:setup   then   npm run dev\n";
+    ? "🎉 Looks good! Run:  npm run dev\n\n   After git pull, if Prisma complains about missing columns, run:\n   npm run db:migrate\n"
+    : "🎉 Looks good! Try:  npm run db:setup   then   npm run dev\n\n   After git pull, if Prisma complains about missing columns, run:\n   npm run db:migrate\n";
   console.log(next);
   process.exit(0);
 }

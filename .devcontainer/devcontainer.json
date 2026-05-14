@@ -8,6 +8,7 @@
     "8080": { "label": "HTTP health + webhooks" }
   },
   "postCreateCommand": "npm install && npm run db:setup",
+  "postStartCommand": "npx prisma migrate deploy",
   "customizations": {
     "vscode": {
       "extensions": ["Prisma.prisma", "dbaeumer.vscode-eslint"]

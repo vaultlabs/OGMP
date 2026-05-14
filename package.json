@@ -12,6 +12,7 @@
     "check-setup": "node scripts/check-setup.mjs",
     "docker:db": "docker compose up -d postgres redis",
     "db:setup": "prisma generate && prisma migrate deploy && prisma db seed",
+    "db:migrate": "prisma migrate deploy",
     "build": "tsc -p tsconfig.build.json",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
