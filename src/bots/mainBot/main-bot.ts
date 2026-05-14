@@ -104,7 +104,7 @@ function fmtUserLine(u: { telegramId: bigint; username: string | null; firstName
   return `${u.firstName ?? "User"} (${un}, id ${u.telegramId.toString()})`;
 }
 
-/** HTML for Telegram <code>parse_mode: "HTML"</code> — user/deal text is escaped so entity errors cannot occur. */
+/** HTML for Telegram <code>parse_mode: "HTML"</code> — user/deal text is escaped; line breaks use newlines (no &lt;br&gt; tags). */
 async function fmtDealCard(dealId: string): Promise<string> {
   const e = escapeTelegramHtml;
   const d = await prisma.deal.findUnique({
@@ -155,18 +155,20 @@ async function fmtDealCard(dealId: string): Promise<string> {
     "Folders: send .zip / .rar / .7z or one file per message (no folder upload).",
     `<b>Last activity</b>: ${e(d.lastActivityAt.toISOString().slice(0, 19))}Z`,
     `<b>Created</b>: ${e(d.createdAt.toISOString().slice(0, 10))}`,
-    `<b>Terms</b>:<br>${e(termsPreview).replace(/\n/g, "<br>")}`,
+    `<b>Terms</b>:
+${e(termsPreview)}`,
   ];
   if (lastEv) lines.push(`<b>Latest event</b>: ${e(lastEv.eventType)}`);
   if (d.paymentAddress && d.status !== "pending_acceptance") {
     lines.push(
       "",
-      `<b>Payment address</b>:<br><code>${e(d.paymentAddress)}</code>`,
+      `<b>Payment address</b>:
+<code>${e(d.paymentAddress)}</code>`,
       `<b>Exact amount</b>: ${e(d.amount.toString())} ${e(d.currency)} on ${e(d.network)}`,
       `<i>${e("Never send crypto outside the address shown by this bot. Wrong network can mean total loss.")}</i>`,
     );
   }
-  return lines.join("<br>");
+  return lines.join("\n");
 }
 
 export function createMainBot(): Bot<Context> {
@@ -456,7 +458,7 @@ export function createMainBot(): Bot<Context> {
     kb.row().text("Upload / Deal room", `dr:enter:${deal.dealCode}`).row();
     kb.text("Timeline", `d:tl:${deal.dealCode}`).text("Delivery log", `d:pr:${deal.dealCode}`).row();
     kb.text("Report deal", `d:rp:${deal.dealCode}`);
-    await ctx.reply(text + hint.replace(/\n/g, "<br>"), { parse_mode: "HTML", reply_markup: kb });
+    await ctx.reply(text + hint, { parse_mode: "HTML", reply_markup: kb });
   });
 
   bot.callbackQuery(/^d:tl:(.+)$/, async (ctx) => {
