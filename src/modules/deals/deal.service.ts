@@ -12,6 +12,7 @@ import { appendDealTimelineEvent } from "../dealTimeline/timeline.service.js";
 import { enqueueDealParticipantNotify } from "../notifications/notificationQueue.service.js";
 import { ConflictError, ForbiddenError, NotFoundError, StateMachineError } from "../../utils/errors.js";
 import { getPaymentProvider } from "../../payments/index.js";
+import { loadConfig } from "../../config/index.js";
 import { isAutoReleaseEnabled } from "../../services/bot-settings.service.js";
 import { acquireLock, releaseLock } from "../../utils/redis.js";
 import { logger } from "../../utils/logger.js";
@@ -203,7 +204,15 @@ export async function acceptTerms(userId: string, dealId: string): Promise<Deal>
       try {
         return await ensurePaymentInstruction(updated.id);
       } catch (e) {
-        logger.error("payment_instruction_failed", { dealId, err: String(e) });
+        const errStr = String(e);
+        const payCfg = loadConfig().PAYMENT_PROVIDER;
+        logger.error("payment_instruction_failed", { dealId, err: errStr, PAYMENT_PROVIDER: payCfg });
+        if (payCfg === "nowpayments" && errStr.includes("not implemented")) {
+          logger.error("payment_instruction_stale_nowpayments_build", {
+            help:
+              "This message only appears on outdated builds. Run: git pull origin main && npm run dev. After restart, logs should include payment_provider_selected with impl nowpayments_api_v1_2026_02 before any deal uses NOWPayments.",
+          });
+        }
         return updated;
       }
     }
