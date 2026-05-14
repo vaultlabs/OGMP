@@ -20,13 +20,8 @@ import {
 import {
   GATEWAY_ACCESS_APPROVED,
   GATEWAY_ACCESS_REQUIRED_LONG,
-  GATEWAY_NOT_CONFIRMED,
   gatewayAccessKeyboard,
 } from "../../modules/gateway/gateway-messages.js";
-import {
-  logGatewayVerificationSkipped,
-  verifyGatewayChatMembership,
-} from "../../modules/gateway/gateway-verify.service.js";
 import {
   clearAdminGatewayExpect,
   getAdminGatewayExpect,
@@ -160,18 +155,18 @@ async function fmtDealCard(dealId: string): Promise<string> {
     "Folders: send .zip / .rar / .7z or one file per message (no folder upload).",
     `<b>Last activity</b>: ${e(d.lastActivityAt.toISOString().slice(0, 19))}Z`,
     `<b>Created</b>: ${e(d.createdAt.toISOString().slice(0, 10))}`,
-    `<b>Terms</b>:<br/>${e(termsPreview).replace(/\n/g, "<br/>")}`,
+    `<b>Terms</b>:<br>${e(termsPreview).replace(/\n/g, "<br>")}`,
   ];
   if (lastEv) lines.push(`<b>Latest event</b>: ${e(lastEv.eventType)}`);
   if (d.paymentAddress && d.status !== "pending_acceptance") {
     lines.push(
       "",
-      `<b>Payment address</b>:<br/><code>${e(d.paymentAddress)}</code>`,
+      `<b>Payment address</b>:<br><code>${e(d.paymentAddress)}</code>`,
       `<b>Exact amount</b>: ${e(d.amount.toString())} ${e(d.currency)} on ${e(d.network)}`,
       `<i>${e("Never send crypto outside the address shown by this bot. Wrong network can mean total loss.")}</i>`,
     );
   }
-  return lines.join("<br/>");
+  return lines.join("<br>");
 }
 
 export function createMainBot(): Bot<Context> {
@@ -311,35 +306,10 @@ export function createMainBot(): Bot<Context> {
       return;
     }
 
-    let verified = false;
-    let allowProceed = true;
-
-    if (eff.chatId) {
-      const v = await verifyGatewayChatMembership(ctx.api, eff.chatId, tid);
-      if (v.ok) verified = true;
-      else if (v.reason === "not_member") {
-        allowProceed = false;
-      } else {
-        logGatewayVerificationSkipped(v.description, {
-          telegram_user_id: tid.toString(),
-          gateway_chat_id: eff.chatId,
-        });
-        verified = false;
-        allowProceed = true;
-      }
-    }
-
-    if (!allowProceed) {
-      await ctx.answerCallbackQuery({ text: "Not confirmed", show_alert: true });
-      await ctx.reply(GATEWAY_NOT_CONFIRMED, {
-        reply_markup: gatewayAccessKeyboard(eff.joinUrl),
-      });
-      return;
-    }
-
+    // Show gateway join UX, but do not enforce real membership (no getChatMember gate).
     await ctx.answerCallbackQuery({ text: "Welcome" });
 
-    u = await markUserGatewayAccess({ userId: u.id, verified });
+    u = await markUserGatewayAccess({ userId: u.id, verified: false });
     await ctx.reply(GATEWAY_ACCESS_APPROVED);
 
     await processMainOnboarding(ctx, u);
@@ -486,7 +456,7 @@ export function createMainBot(): Bot<Context> {
     kb.row().text("Upload / Deal room", `dr:enter:${deal.dealCode}`).row();
     kb.text("Timeline", `d:tl:${deal.dealCode}`).text("Delivery log", `d:pr:${deal.dealCode}`).row();
     kb.text("Report deal", `d:rp:${deal.dealCode}`);
-    await ctx.reply(text + hint.replace(/\n/g, "<br/>"), { parse_mode: "HTML", reply_markup: kb });
+    await ctx.reply(text + hint.replace(/\n/g, "<br>"), { parse_mode: "HTML", reply_markup: kb });
   });
 
   bot.callbackQuery(/^d:tl:(.+)$/, async (ctx) => {
