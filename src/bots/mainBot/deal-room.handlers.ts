@@ -131,7 +131,6 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
       if (sellerLocked) {
         const fn = fileName ?? type;
         await ctx.reply(sellerFileSecuredText(deal.dealCode, fn), {
-          parse_mode: "Markdown",
           reply_markup: sellerFileSecuredKeyboard(deal.dealCode),
         });
         await notifyBuyerPaymentRequired(dealId);

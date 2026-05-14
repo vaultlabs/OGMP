@@ -24,3 +24,7 @@ _Always verify network, amount, and address before sending crypto._`;
 
 export const SAFETY_FOOTER =
   "\n\n_Never send crypto outside the address shown by this bot. Wrong network can mean total loss._";
+
+/** Plain-text variant for deal cards (sent without Telegram Markdown). */
+export const SAFETY_FOOTER_PLAIN =
+  "\n\nNever send crypto outside the address shown by this bot. Wrong network can mean total loss.";

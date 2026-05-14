@@ -71,7 +71,7 @@ export async function saveDealRoomMessage(params: {
     if (otherUser) {
       await enqueueDealParticipantNotify({
         targetTelegramId: otherUser.telegramId,
-        text: `Update on deal *${deal.dealCode}* (deal room).`,
+        text: `Update on deal ${deal.dealCode} (deal room).`,
         buttons: [[{ text: "View deal", cb: `d:v:${deal.dealCode}` }]],
       });
     }

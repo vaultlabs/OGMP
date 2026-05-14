@@ -15,17 +15,13 @@ import { userFacingDealStatus } from "../modules/deals/user-facing-status.js";
 
 const DIV = "━━━━━━━━━━━━━━━━━━";
 
-function escMd(s: string): string {
-  return s.replace(/\\/g, "\\\\").replace(/[_*[\]()~`>#+=|{}.!-]/g, (c) => `\\${c}`);
-}
-
 export function sellerFileSecuredText(dealCode: string, fileName: string): string {
   return [
     DIV,
     "OGMP MM — File Secured",
     DIV,
     "",
-    `Deal: ${escMd(dealCode)}`,
+    `Deal: ${dealCode}`,
     "",
     "Your delivery file has been uploaded and locked.",
     "",
@@ -33,7 +29,7 @@ export function sellerFileSecuredText(dealCode: string, fileName: string): strin
     "",
     "Once payment is confirmed, the file will unlock automatically.",
     "",
-    `File: ${escMd(fileName)}`,
+    `File: ${fileName}`,
   ].join("\n");
 }
 
@@ -64,27 +60,27 @@ export function buyerPaymentRequiredText(params: {
     params.lockedFileCount && params.lockedFileCount > 1
       ? `The seller has uploaded ${params.lockedFileCount} delivery files (names only until you pay).`
       : params.lockedFileName
-        ? `The seller has uploaded: ${escMd(params.lockedFileName)}`
+        ? `The seller has uploaded: ${params.lockedFileName}`
         : "The seller has uploaded the delivery.";
   return [
     DIV,
     "OGMP MM — Payment Required",
     DIV,
     "",
-    `Deal: ${escMd(params.dealCode)}`,
+    `Deal: ${params.dealCode}`,
     `Status: Delivery Locked`,
     "",
     lockLine,
     "",
     "To unlock and download, send payment to the escrow address below.",
     "",
-    `Amount: *${escMd(params.amount)} ${escMd(params.currency)}*`,
-    `Network: *${escMd(params.network)}*`,
+    `Amount: ${params.amount} ${params.currency}`,
+    `Network: ${params.network}`,
     "",
-    `Payment Address:`,
-    `\`${escMd(params.paymentAddress)}\``,
+    "Payment Address:",
+    params.paymentAddress,
     "",
-    `Expires: ${escMd(exp)}`,
+    `Expires: ${exp}`,
     "",
     "Important:",
     "Send only the selected crypto on the correct network.",
@@ -113,7 +109,7 @@ export function buyerUnlockedText(dealCode: string): string {
     "OGMP MM — Delivery Unlocked",
     DIV,
     "",
-    `Deal: ${escMd(dealCode)}`,
+    `Deal: ${dealCode}`,
     "Status: Payment Confirmed",
     "",
     "Your payment has been secured.",
@@ -147,7 +143,7 @@ export function buyerReviewFollowupText(dealCode: string): string {
     "",
     "Confirm only if everything is correct.",
     "",
-    `Deal: ${escMd(dealCode)}`,
+    `Deal: ${dealCode}`,
   ].join("\n");
 }
 
@@ -167,7 +163,7 @@ export function buyerPaymentSecuredAwaitingDeliveryText(dealCode: string): strin
     "OGMP MM — Payment Confirmed",
     DIV,
     "",
-    `Deal: ${escMd(dealCode)}`,
+    `Deal: ${dealCode}`,
     "",
     "Your payment is secured in escrow.",
     "",
@@ -181,7 +177,7 @@ export function sellerFundsSecuredText(dealCode: string): string {
     "OGMP MM — Funds Secured",
     DIV,
     "",
-    `Deal: ${escMd(dealCode)}`,
+    `Deal: ${dealCode}`,
     "",
     "Buyer payment is confirmed and secured in escrow.",
     "",
@@ -266,7 +262,7 @@ export async function onPaymentConfirmedDeliveryFlow(dealId: string): Promise<vo
       const text = buyerUnlockedText(dealFresh.dealCode);
       await enqueueDmWithButtons({
         chatId: dealFresh.buyer.telegramId.toString(),
-        text: `${text}\n\n_Status: ${escMd(ufs)}_`,
+        text: `${text}\n\nStatus: ${ufs}`,
         buttons: buyerUnlockedKeyboard(dealFresh.dealCode, !auto),
       });
       if (auto) {
@@ -278,7 +274,7 @@ export async function onPaymentConfirmedDeliveryFlow(dealId: string): Promise<vo
     } else {
       await enqueueDmWithButtons({
         chatId: dealFresh.buyer.telegramId.toString(),
-        text: `${buyerPaymentSecuredAwaitingDeliveryText(dealFresh.dealCode)}\n\n_Status: ${escMd(ufs)}_`,
+        text: `${buyerPaymentSecuredAwaitingDeliveryText(dealFresh.dealCode)}\n\nStatus: ${ufs}`,
         buttons: [
           [
             { text: "View Deal", cb: `d:v:${dealFresh.dealCode}` },

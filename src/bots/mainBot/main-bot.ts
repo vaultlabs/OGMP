@@ -37,7 +37,7 @@ import { getActiveDealRoom } from "../../modules/dealMessages/deal-room-session.
 import { listDealMessages } from "../../modules/dealMessages/dealMessage.service.js";
 import { createReportSession } from "../../modules/reports/report-session.service.js";
 import { assertCanOpenNewReport, findSubmittedReviewReportForDeal } from "../../modules/reports/report.service.js";
-import { TERMS_TEXT, WELCOME, SAFETY_FOOTER } from "./messages.js";
+import { TERMS_TEXT, WELCOME, SAFETY_FOOTER_PLAIN } from "./messages.js";
 import {
   acceptTerms,
   buyerConfirmRelease,
@@ -73,7 +73,6 @@ import { applyReview } from "../../services/reputation.service.js";
 import { reviewSchema } from "../../modules/deals/deal.validation.js";
 import type { CreateDealInput } from "../../modules/deals/deal.service.js";
 import { userFacingDealStatus } from "../../modules/deals/user-facing-status.js";
-import { escapeTelegramLegacyMarkdown } from "../../utils/telegram-escape.js";
 import {
   createDealSuccessKeyboard,
   joinSuccessKeyboard,
@@ -104,24 +103,20 @@ function mainMenuKb(isAdmin: boolean): InlineKeyboard {
   return kb;
 }
 
-function fmtUser(u: { telegramId: bigint; username: string | null; firstName: string | null }): string {
-  const fn = escapeTelegramLegacyMarkdown(u.firstName ?? "User");
-  const id = escapeTelegramLegacyMarkdown(u.telegramId.toString());
-  if (u.username) {
-    const un = escapeTelegramLegacyMarkdown(u.username);
-    return `${fn} (@${un}, id \`${id}\`)`;
-  }
-  return `${fn} (no username, id \`${id}\`)`;
+function fmtUserLine(u: { telegramId: bigint; username: string | null; firstName: string | null }): string {
+  const un = u.username ? `@${u.username}` : "no username";
+  return `${u.firstName ?? "User"} (${un}, id ${u.telegramId.toString()})`;
 }
 
+/** Plain text only — safe for Telegram without parse_mode (no Markdown entity errors). */
 async function fmtDealCard(dealId: string): Promise<string> {
   const d = await prisma.deal.findUnique({
     where: { id: dealId },
     include: { buyer: true, seller: true, activeReport: true },
   });
   if (!d) return "Deal not found.";
-  const buyer = d.buyer ? fmtUser(d.buyer) : "_pending_";
-  const seller = d.seller ? fmtUser(d.seller) : "_pending_";
+  const buyer = d.buyer ? fmtUserLine(d.buyer) : "(pending)";
+  const seller = d.seller ? fmtUserLine(d.seller) : "(pending)";
   const [lockedCount, msgCount, lastEv, pay] = await Promise.all([
     prisma.dealMessage.count({ where: { dealId, lockedForBuyer: true } }),
     prisma.dealMessage.count({ where: { dealId } }),
@@ -131,45 +126,33 @@ async function fmtDealCard(dealId: string): Promise<string> {
     }),
     prisma.payment.findFirst({ where: { dealId }, orderBy: { createdAt: "desc" } }),
   ]);
-  const displayStatus = escapeTelegramLegacyMarkdown(
-    userFacingDealStatus(d, {
-      hasLockedDelivery: lockedCount > 0,
-      paymentStatus: pay?.status ?? null,
-    }),
-  );
+  const displayStatus = userFacingDealStatus(d, {
+    hasLockedDelivery: lockedCount > 0,
+    paymentStatus: pay?.status ?? null,
+  });
   const delivery =
     d.status === "item_delivered" || d.status === "buyer_confirmed" || d.status === "release_requested"
       ? "Buyer Reviewing / Release"
       : d.status === "funded"
         ? "Payment Confirmed"
         : "—";
-  const termsPreview = escapeTelegramLegacyMarkdown(
-    `${d.dealTerms.slice(0, 300)}${d.dealTerms.length > 300 ? "…" : ""}`,
-  );
+  const termsPreview = `${d.dealTerms.slice(0, 300)}${d.dealTerms.length > 300 ? "…" : ""}`;
   const reportLine = d.activeReport
-    ? `Report: \`${escapeTelegramLegacyMarkdown(d.activeReport.reportCode)}\` (${escapeTelegramLegacyMarkdown(d.activeReport.status)})`
-    : "Report: _none active_";
-  const payStatusEsc = pay ? escapeTelegramLegacyMarkdown(pay.status) : "";
-  const lastEvEsc = lastEv ? escapeTelegramLegacyMarkdown(lastEv.eventType) : "";
-  const addrEsc = d.paymentAddress ? escapeTelegramLegacyMarkdown(d.paymentAddress) : "";
-  const amtEsc = escapeTelegramLegacyMarkdown(d.amount.toString());
-  const curEsc = escapeTelegramLegacyMarkdown(d.currency);
-  const netEsc = escapeTelegramLegacyMarkdown(d.network);
-  const dealCodeEsc = escapeTelegramLegacyMarkdown(d.dealCode);
-  const statusEsc = escapeTelegramLegacyMarkdown(d.status);
+    ? `Report: ${d.activeReport.reportCode} (${d.activeReport.status})`
+    : "Report: none active";
   return [
     `━━━━━━━━━━━━━━━━━━`,
     `OGMP MM — Deal`,
     `━━━━━━━━━━━━━━━━━━`,
     "",
-    `Deal: *${dealCodeEsc}*`,
-    `Status: *${displayStatus}*${d.frozen ? " (frozen)" : ""}`,
-    `_Internal: \`${statusEsc}\`_`,
+    `Deal: ${d.dealCode}`,
+    `Status: ${displayStatus}${d.frozen ? " (frozen)" : ""}`,
+    `Internal status: ${d.status}`,
     `Buyer: ${buyer}`,
     `Seller: ${seller}`,
-    `Amount: *${amtEsc} ${curEsc}* (${netEsc})`,
+    `Amount: ${d.amount.toString()} ${d.currency} (${d.network})`,
     `Fee: ${d.feeAmount.toString()} (${d.feePayer})`,
-    `Payment: ${pay ? `\`${payStatusEsc}\`` : "—"}`,
+    `Payment: ${pay ? pay.status : "—"}`,
     `Delivery: ${delivery}`,
     reportLine,
     `Files submitted: ${msgCount}`,
@@ -177,9 +160,9 @@ async function fmtDealCard(dealId: string): Promise<string> {
     `Last activity: ${d.lastActivityAt.toISOString().slice(0, 19)}Z`,
     `Created: ${d.createdAt.toISOString().slice(0, 10)}`,
     `Terms: ${termsPreview}`,
-    lastEv ? `Latest event: \`${lastEvEsc}\`` : "",
+    lastEv ? `Latest event: ${lastEv.eventType}` : "",
     d.paymentAddress && d.status !== "pending_acceptance"
-      ? `\n*Payment address*\n\`${addrEsc}\`\nExact amount: *${amtEsc} ${curEsc}* on *${netEsc}*${SAFETY_FOOTER}`
+      ? `\nPayment address:\n${d.paymentAddress}\nExact amount: ${d.amount.toString()} ${d.currency} on ${d.network}${SAFETY_FOOTER_PLAIN}`
       : "",
   ]
     .filter(Boolean)
@@ -246,8 +229,8 @@ export function createMainBot(): Bot<Context> {
       await clearPendingJoinInvite(tid);
       try {
         const deal = await joinDealByToken(user, joinTok);
-        await ctx.reply(`Joined deal *${escapeTelegramLegacyMarkdown(deal.dealCode)}*.`, { parse_mode: "Markdown" });
-        await ctx.reply(await fmtDealCard(deal.id), { parse_mode: "Markdown" });
+        await ctx.reply(`Joined deal ${deal.dealCode}.`);
+        await ctx.reply(await fmtDealCard(deal.id));
         await ctx.reply("Next: both sides accept terms.", {
           reply_markup: joinSuccessKeyboard(deal.dealCode),
         });
@@ -441,29 +424,30 @@ export function createMainBot(): Bot<Context> {
     });
     let hint = "";
     if (deal.status === "pending_acceptance") {
-      hint = "\n\n_Next:_ Both parties accept terms. The buyer will then receive the escrow payment address.";
+      hint =
+        "\n\nNext: both parties accept terms. The buyer will then receive the escrow payment address.";
     } else if (deal.status === "waiting_payment" || deal.status === "payment_detected") {
       if (deal.buyerId === u.id) {
         hint = lockedPre
-          ? "\n\n_Delivery is locked._ Send the exact amount on the correct network, then use *I Have Paid* or *Check Payment*."
-          : "\n\n_Waiting for the seller to upload delivery._ You will get a payment notice when files are locked.";
+          ? "\n\nDelivery is locked. Send the exact amount on the correct network, then use I Have Paid or Check Payment."
+          : "\n\nWaiting for the seller to upload delivery. You will get a payment notice when files are locked.";
       } else if (deal.sellerId === u.id) {
         hint =
-          "\n\n_Upload delivery first:_ open *Upload / Deal room* and send files (.pdf, .txt, .zip, images, video). The buyer pays after your delivery is locked.";
+          "\n\nUpload delivery first: open Upload / Deal room and send files (.pdf, .txt, .zip, images, video). The buyer pays after your delivery is locked.";
       } else {
-        hint = "\n\n_Wait for both sides to accept terms and complete delivery / payment._";
+        hint = "\n\nWait for both sides to accept terms and complete delivery / payment.";
       }
     } else if (deal.status === "funded") {
       if (deal.sellerId === u.id) {
         hint =
-          "\n\n_Funds are in escrow._ Add more in *Upload / Deal room* if needed, or use *Mark delivered* if the buyer is not yet in review.";
+          "\n\nFunds are in escrow. Add more in Upload / Deal room if needed, or use Mark delivered if the buyer is not yet in review.";
       } else if (deal.buyerId === u.id) {
-        hint = "\n\n_Check recent OGMP MM messages for files, or tap *Download Files*._";
+        hint = "\n\nCheck recent OGMP MM messages for files, or tap Download Files.";
       }
     } else if (deal.status === "item_delivered" && deal.buyerId === u.id) {
-      hint = "\n\n_Review the delivery, then confirm release or open a dispute._";
+      hint = "\n\nReview the delivery, then confirm release or open a dispute.";
     } else if (deal.status === "item_delivered" && deal.sellerId === u.id) {
-      hint = "\n\n_Waiting for buyer confirmation._";
+      hint = "\n\nWaiting for buyer confirmation.";
     }
     const kb = new InlineKeyboard();
     if (deal.status === "pending_acceptance") {
@@ -497,7 +481,7 @@ export function createMainBot(): Bot<Context> {
     kb.row().text("Upload / Deal room", `dr:enter:${deal.dealCode}`).row();
     kb.text("Timeline", `d:tl:${deal.dealCode}`).text("Delivery log", `d:pr:${deal.dealCode}`).row();
     kb.text("Report deal", `d:rp:${deal.dealCode}`);
-    await ctx.reply(text + hint, { parse_mode: "Markdown", reply_markup: kb });
+    await ctx.reply(text + hint, { reply_markup: kb });
   });
 
   bot.callbackQuery(/^d:tl:(.+)$/, async (ctx) => {
@@ -689,7 +673,7 @@ export function createMainBot(): Bot<Context> {
     try {
       const updated = await acceptTerms(u.id, deal.id);
       await ctx.answerCallbackQuery({ text: "Accepted" });
-      await ctx.reply(await fmtDealCard(updated.id), { parse_mode: "Markdown" });
+      await ctx.reply(await fmtDealCard(updated.id));
       if (updated.status === "pending_acceptance") {
         await notifyCounterpartyAfterTermsAccept(updated.id, u.id);
       } else if (updated.status === "waiting_payment" && updated.paymentAddress) {
@@ -711,7 +695,7 @@ export function createMainBot(): Bot<Context> {
     try {
       const d = await markDelivered(u.id, deal.id);
       await ctx.answerCallbackQuery({ text: "Marked delivered" });
-      await ctx.reply(await fmtDealCard(d.id), { parse_mode: "Markdown" });
+      await ctx.reply(await fmtDealCard(d.id));
       const ns = nextStepForActorReply(d, u.id);
       if (ns) await ctx.reply(ns.text, { reply_markup: ns.kb });
     } catch (e) {
@@ -728,7 +712,7 @@ export function createMainBot(): Bot<Context> {
     try {
       const d = await buyerConfirmRelease(u.id, deal.id);
       await ctx.answerCallbackQuery({ text: "Processed" });
-      await ctx.reply(await fmtDealCard(d.id), { parse_mode: "Markdown" });
+      await ctx.reply(await fmtDealCard(d.id));
       const ns = nextStepForActorReply(d, u.id);
       if (ns) await ctx.reply(ns.text, { reply_markup: ns.kb });
     } catch (e) {
@@ -762,9 +746,7 @@ export function createMainBot(): Bot<Context> {
     try {
       const d = await cancelDeal(u.id, deal.id);
       await ctx.answerCallbackQuery({ text: "Cancelled" });
-      await ctx.reply(`Deal ${escapeTelegramLegacyMarkdown(d.dealCode)} is now *${escapeTelegramLegacyMarkdown(d.status)}*.`, {
-        parse_mode: "Markdown",
-      });
+      await ctx.reply(`Deal ${d.dealCode} is now ${d.status}.`);
     } catch (e) {
       await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
     }
@@ -975,8 +957,8 @@ export function createMainBot(): Bot<Context> {
     }
     try {
       const deal = await joinDealByToken(user, token);
-      await ctx.reply(`Joined deal *${escapeTelegramLegacyMarkdown(deal.dealCode)}*.`, { parse_mode: "Markdown" });
-      await ctx.reply(await fmtDealCard(deal.id), { parse_mode: "Markdown" });
+      await ctx.reply(`Joined deal ${deal.dealCode}.`);
+      await ctx.reply(await fmtDealCard(deal.id));
       await ctx.reply("Next: both sides accept terms.", {
         reply_markup: joinSuccessKeyboard(deal.dealCode),
       });
@@ -1187,12 +1169,9 @@ export function createMainBot(): Bot<Context> {
       const cfg = loadConfig();
       const me = cfg.BOT_PUBLIC_USERNAME ?? (await ctx.api.getMe()).username;
       const link = me ? `https://t.me/${me}?start=join_${deal.inviteToken}` : `Invite token:\n${deal.inviteToken}`;
-      await ctx.reply(
-        `Deal *${escapeTelegramLegacyMarkdown(deal.dealCode)}* is ready.\nSend this invite to your counterparty:`,
-        { parse_mode: "Markdown" },
-      );
+      await ctx.reply(`Deal ${deal.dealCode} is ready.\nSend this invite to your counterparty:`);
       await ctx.reply(link);
-      await ctx.reply(await fmtDealCard(deal.id), { parse_mode: "Markdown" });
+      await ctx.reply(await fmtDealCard(deal.id));
       await ctx.reply("Next: they join, then both sides accept terms.", {
         reply_markup: createDealSuccessKeyboard(deal.dealCode),
       });
