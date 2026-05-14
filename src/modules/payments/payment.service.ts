@@ -131,6 +131,7 @@ export async function applyPaymentSyncForDeal(dealId: string): Promise<void> {
     }
     deal = await loadDeal(dealId);
     if (!deal) return;
+    let becameFunded = false;
     if (deal.status === "payment_detected") {
       await transitionDealStatus(deal.id, "payment_detected", "funded", {
         fundedAt: new Date(),
@@ -141,8 +142,13 @@ export async function applyPaymentSyncForDeal(dealId: string): Promise<void> {
         eventType: "payment_confirmed",
         metadata: { txHash: status.txHash },
       });
+      becameFunded = true;
     }
     await writeAuditLog({ eventType: "payment_confirmed", dealId, metadata: { txHash: status.txHash } });
+    if (becameFunded) {
+      const { onPaymentConfirmedDeliveryFlow } = await import("../../services/delivery.service.js");
+      await onPaymentConfirmedDeliveryFlow(dealId);
+    }
   }
 }
 

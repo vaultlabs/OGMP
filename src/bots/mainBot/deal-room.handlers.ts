@@ -12,6 +12,12 @@ import {
   TELEGRAM_FOLDER_UPLOAD_EXPLANATION_PLAIN,
   formatUploadContinuationPlain,
 } from "../../utils/upload-guidance.js";
+import { assertFileAllowed } from "../../utils/file-safety.js";
+import {
+  notifyBuyerPaymentRequired,
+  sellerFileSecuredKeyboard,
+  sellerFileSecuredText,
+} from "../../services/delivery.service.js";
 
 async function resolveDealIdFromCode(code: string): Promise<string | null> {
   const d = await prisma.deal.findUnique({ where: { dealCode: code } });
@@ -43,14 +49,17 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
     await ctx.answerCallbackQuery({ text: "Deal room active" });
     await ctx.reply(
       [
-        `💬 Deal room active for ${deal.dealCode}.`,
+        "━━━━━━━━━━━━━━━━━━",
+        "OGMP MM — Deal Room",
+        "━━━━━━━━━━━━━━━━━━",
         "",
-        "Send messages or upload proof (photos, videos, documents, voice, audio).",
+        `Deal: ${deal.dealCode}`,
+        "",
+        "Send a message or upload a file. Telegram sends .txt as a document.",
         "",
         TELEGRAM_FOLDER_UPLOAD_EXPLANATION_PLAIN,
         "",
         "Use /done_room when you are finished.",
-        "Everything here is stored privately for this deal.",
       ].join("\n"),
     );
   });
@@ -58,7 +67,7 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
   bot.command("done_room", async (ctx) => {
     if (!ctx.from) return;
     await clearActiveDealRoom(BigInt(ctx.from.id));
-    await ctx.reply("✅ Left deal room mode.");
+    await ctx.reply("Deal room mode ended.");
   });
 
   bot.on("message:text", async (ctx, next) => {
@@ -74,9 +83,9 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
         messageType: "text",
         text: ctx.message.text,
       });
-      await ctx.reply("✅ Message saved to the deal record.");
+      await ctx.reply("Message saved.");
     } catch (e) {
-      await ctx.reply(`❌ ${String((e as Error).message)}`);
+      await ctx.reply(String((e as Error).message));
     }
   });
 
@@ -96,6 +105,13 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
     if (!dealId) return;
     const u = await findUserByTelegramId(BigInt(ctx.from.id));
     if (!u) return;
+    const deal = await prisma.deal.findUnique({ where: { id: dealId } });
+    if (!deal) return;
+    const hasFile = !!fileId;
+    const sellerLocked =
+      deal.sellerId === u.id &&
+      hasFile &&
+      (deal.status === "waiting_payment" || deal.status === "payment_detected");
     try {
       await saveDealRoomMessage({
         dealId,
@@ -108,22 +124,44 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
         mimeType,
         fileSize,
         caption,
+        lockedForBuyer: sellerLocked,
+        deliveryAsset: sellerLocked,
+        skipCounterpartyNotification: sellerLocked,
       });
+      if (sellerLocked) {
+        const fn = fileName ?? type;
+        await ctx.reply(sellerFileSecuredText(deal.dealCode, fn), {
+          parse_mode: "Markdown",
+          reply_markup: sellerFileSecuredKeyboard(deal.dealCode),
+        });
+        await notifyBuyerPaymentRequired(dealId);
+        return;
+      }
       await ctx.reply(
         [
-          "✅ File saved to the deal evidence log.",
+          "File saved.",
           "",
-          formatUploadContinuationPlain("type /done_room when you are finished"),
+          formatUploadContinuationPlain("send another file or type /done_room when you are finished"),
         ].join("\n"),
       );
     } catch (e) {
-      await ctx.reply(`❌ ${String((e as Error).message)}`);
+      await ctx.reply(String((e as Error).message));
     }
   };
 
   bot.on("message:photo", async (ctx, next) => {
     if (!ctx.from || !(await getActiveDealRoom(BigInt(ctx.from.id)))) return next();
     const p = ctx.message.photo?.slice(-1)[0];
+    try {
+      assertFileAllowed({
+        fileName: "photo.jpg",
+        mimeType: "image/jpeg",
+        fileSize: p?.file_size,
+      });
+    } catch (e) {
+      await ctx.reply(String((e as Error).message));
+      return;
+    }
     await saveMedia(
       ctx,
       "photo",
@@ -138,17 +176,29 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
   });
 
   bot.on("message:document", async (ctx, next) => {
-    if (!ctx.from || !(await getActiveDealRoom(BigInt(ctx.from.id)))) return next();
-    const d = ctx.message.document;
-    if (!d) return next();
+    if (!ctx.from) return next();
+    if (!("document" in ctx.message)) return next();
+    if (!(await getActiveDealRoom(BigInt(ctx.from.id)))) return next();
+    const doc = ctx.message.document;
+    if (!doc) return next();
+    try {
+      assertFileAllowed({
+        fileName: doc.file_name,
+        mimeType: doc.mime_type,
+        fileSize: doc.file_size,
+      });
+    } catch (e) {
+      await ctx.reply(String((e as Error).message));
+      return;
+    }
     await saveMedia(
       ctx,
       "document",
-      d.file_id,
-      d.file_unique_id,
-      d.file_name ?? "document",
-      d.mime_type,
-      d.file_size,
+      doc.file_id,
+      doc.file_unique_id,
+      doc.file_name ?? "document",
+      doc.mime_type,
+      doc.file_size,
       ctx.message.caption,
       "[document]",
     );
@@ -158,6 +208,16 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
     if (!ctx.from || !(await getActiveDealRoom(BigInt(ctx.from.id)))) return next();
     const v = ctx.message.video;
     if (!v) return next();
+    try {
+      assertFileAllowed({
+        fileName: v.file_name ?? "video.mp4",
+        mimeType: v.mime_type,
+        fileSize: v.file_size,
+      });
+    } catch (e) {
+      await ctx.reply(String((e as Error).message));
+      return;
+    }
     await saveMedia(
       ctx,
       "video",
@@ -175,6 +235,16 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
     if (!ctx.from || !(await getActiveDealRoom(BigInt(ctx.from.id)))) return next();
     const a = ctx.message.animation;
     if (!a) return next();
+    try {
+      assertFileAllowed({
+        fileName: a.file_name ?? "animation.mp4",
+        mimeType: a.mime_type,
+        fileSize: a.file_size,
+      });
+    } catch (e) {
+      await ctx.reply(String((e as Error).message));
+      return;
+    }
     await saveMedia(
       ctx,
       "animation",
@@ -192,6 +262,16 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
     if (!ctx.from || !(await getActiveDealRoom(BigInt(ctx.from.id)))) return next();
     const v = ctx.message.voice;
     if (!v) return next();
+    try {
+      assertFileAllowed({
+        fileName: "voice.ogg",
+        mimeType: "audio/ogg",
+        fileSize: v.file_size,
+      });
+    } catch (e) {
+      await ctx.reply(String((e as Error).message));
+      return;
+    }
     await saveMedia(ctx, "voice", v.file_id, v.file_unique_id, "voice.ogg", "audio/ogg", v.file_size, undefined, "[voice]");
   });
 
@@ -199,6 +279,16 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
     if (!ctx.from || !(await getActiveDealRoom(BigInt(ctx.from.id)))) return next();
     const a = ctx.message.audio;
     if (!a) return next();
+    try {
+      assertFileAllowed({
+        fileName: a.file_name ?? "audio",
+        mimeType: a.mime_type,
+        fileSize: a.file_size,
+      });
+    } catch (e) {
+      await ctx.reply(String((e as Error).message));
+      return;
+    }
     await saveMedia(
       ctx,
       "audio",

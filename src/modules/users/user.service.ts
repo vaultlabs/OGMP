@@ -33,6 +33,21 @@ export async function findUserByTelegramId(telegramId: bigint): Promise<User | n
   return prisma.user.findUnique({ where: { telegramId } });
 }
 
+export async function markUserGatewayAccess(input: {
+  userId: string;
+  verified: boolean;
+}): Promise<User> {
+  const now = new Date();
+  return prisma.user.update({
+    where: { id: input.userId },
+    data: {
+      gatewayAcceptedAt: now,
+      gatewayVerified: input.verified,
+      gatewayVerifiedAt: input.verified ? now : null,
+    },
+  });
+}
+
 export async function banUserByTelegramId(telegramId: bigint, reason: string): Promise<void> {
   await prisma.user.updateMany({
     where: { telegramId },

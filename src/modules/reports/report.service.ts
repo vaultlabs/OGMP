@@ -5,24 +5,25 @@ import { appendDealTimelineEvent } from "../dealTimeline/timeline.service.js";
 import { writeAuditLog } from "../../services/audit.service.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../../utils/errors.js";
 import { assertFileAllowed } from "../../utils/file-safety.js";
-import { enqueueAdminReportSubmitted } from "../notifications/notificationQueue.service.js";
+import { enqueueAdminReportSubmitted, enqueueDealParticipantNotify } from "../notifications/notificationQueue.service.js";
 
-const ACTIVE_REPORT_STATUSES: ReportStatus[] = [
-  "draft",
+/** Submitted / in-review only — drafts do not block the main bot "Report deal" flow. */
+const SUBMITTED_REVIEW_REPORT_STATUSES: ReportStatus[] = [
   "submitted",
   "under_review",
   "waiting_for_buyer",
   "waiting_for_seller",
 ];
 
-export async function findBlockingReportForDeal(dealId: string) {
+export async function findSubmittedReviewReportForDeal(dealId: string) {
   return prisma.report.findFirst({
-    where: { dealId, status: { in: ACTIVE_REPORT_STATUSES } },
+    where: { dealId, status: { in: SUBMITTED_REVIEW_REPORT_STATUSES } },
+    orderBy: { createdAt: "desc" },
   });
 }
 
 export async function assertCanOpenNewReport(dealId: string, userId: string): Promise<void> {
-  const existing = await findBlockingReportForDeal(dealId);
+  const existing = await findSubmittedReviewReportForDeal(dealId);
   if (existing) {
     throw new ConflictError(
       "This deal is already under review. Add more evidence through the OGMP MM REPORT bot until an admin closes the report.",
@@ -132,6 +133,17 @@ export async function submitReportAndFreezeDeal(reportId: string): Promise<void>
     metadata: { reportCode: report.reportCode },
   });
   await enqueueAdminReportSubmitted(reportId);
+  const d = await prisma.deal.findUnique({
+    where: { id: report.dealId },
+    include: { buyer: true, seller: true },
+  });
+  if (d) {
+    const line = `⚖ A *report* was filed on deal \`${d.dealCode}\` (${report.reportCode}). The deal is *frozen* pending admin review.`;
+    for (const u of [d.buyer, d.seller]) {
+      if (!u) continue;
+      await enqueueDealParticipantNotify({ targetTelegramId: u.telegramId, text: line });
+    }
+  }
 }
 
 export async function adminResolveReport(params: {

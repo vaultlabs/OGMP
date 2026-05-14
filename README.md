@@ -170,6 +170,16 @@ The container runs `prisma migrate deploy` before starting the bot.
 - When **false**, after the buyer confirms receipt the deal moves to **`release_requested`** and an admin must approve release (e.g. **`/admin_release`** or admin panel) before funds are marked released and payout rows are created.
 - When **true**, buyer confirmation performs automatic release **after** internal checks (still requires seller payout address on the deal for payout row creation).
 
+### AUTO_SEND_DELIVERY_AFTER_PAYMENT
+
+- Default **`true`**: after escrow payment is confirmed, the notification worker sends each seller delivery file to the buyer by `telegram_file_id`, then a short “Buyer review” prompt with Confirm / Dispute / View deal.
+- When **`false`**: the buyer receives a **Download Files** button instead of automatic file DMs (same bundle is sent once per deal).
+
+### Seller-first delivery (locked until payment)
+
+- In **Upload / Deal room**, when the **seller** sends a file while the deal is in **`waiting_payment`** or **`payment_detected`**, the file is stored with **`locked_for_buyer`** until payment confirms. The buyer only sees **names/count** in the delivery log, not Telegram file ids.
+- After **confirmed payment** (`funded`), locked rows unlock, the buyer is notified, and (if configured) files are sent. If the seller pre-uploaded, the deal can move straight to **`item_delivered`** (buyer review).
+
 ## Payment providers
 
 - **`PAYMENT_PROVIDER=mock`**: generates deterministic mock addresses, reads simulated chain state from Redis, and verifies HMAC-signed webhooks. **Never use mock mode with real customer funds.**
@@ -201,7 +211,7 @@ src/
   bots/mainBot/     # main Telegram bot
   bots/reportBot/   # report Telegram bot
   modules/          # deals, payments, reports, users, …
-  services/         # fees, audit, escrow state machine
+  services/         # fees, audit, escrow state machine, delivery UX helpers
   payments/         # mock + provider skeletons
   jobs/             # polling watchers
   workers/          # BullMQ notification worker

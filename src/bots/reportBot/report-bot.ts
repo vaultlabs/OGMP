@@ -14,6 +14,8 @@ import {
   submitReportAndFreezeDeal,
   loadReportForAdmin,
   addReportAdminNote,
+  findSubmittedReviewReportForDeal,
+  adminResolveReport,
 } from "../../modules/reports/report.service.js";
 import { assertFileAllowed } from "../../utils/file-safety.js";
 import {
@@ -22,6 +24,8 @@ import {
 } from "../../utils/upload-guidance.js";
 import type { ParticipantRole, ReportCategory } from "@prisma/client";
 import { adminForceRefund, adminForceRelease } from "../../modules/admin/admin.service.js";
+import { buildAdminEvidenceDigest } from "../../modules/reports/evidence-view.service.js";
+import { enqueueAdminReportMoreEvidence, enqueueDealParticipantNotify } from "../../modules/notifications/notificationQueue.service.js";
 
 const WIZ = (id: bigint) => `ogmp:report_wiz:${id.toString()}`;
 
@@ -29,7 +33,8 @@ type Wiz =
   | { step: "role"; sessionId: string; dealId: string; userId: string }
   | { step: "category"; sessionId: string; dealId: string; userId: string; role: ParticipantRole }
   | { step: "describe"; sessionId: string; dealId: string; userId: string; role: ParticipantRole; category: ReportCategory }
-  | { step: "collect"; reportId: string; dealId: string };
+  | { step: "collect"; reportId: string; dealId: string }
+  | { step: "append_collect"; reportId: string; dealId: string };
 
 async function getWiz(id: bigint): Promise<Wiz | null> {
   const raw = await getRedis().get(WIZ(id));
@@ -49,6 +54,35 @@ function startArg(ctx: Context): string | undefined {
   if (!t) return;
   const m = /^\/start(?:@\w+)?(?:\s+(.+))?$/i.exec(t);
   return m?.[1]?.trim();
+}
+
+function commandArgs(text: string): string[] {
+  return text.trim().split(/\s+/).filter(Boolean).slice(1);
+}
+
+function reportAdminDetailKb(reportId: string): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("View evidence", `rpa:ev:${reportId}`)
+    .text("Mark under review", `rpa:under:${reportId}`)
+    .row()
+    .text("Request proof", `rpa:more:${reportId}`)
+    .text("Close report", `rpa:cl:${reportId}`)
+    .row()
+    .text("Release", `rpa:rel:${reportId}`)
+    .text("Refund", `rpa:ref:${reportId}`)
+    .row()
+    .text("Note", `rpa:note:${reportId}`);
+}
+
+async function sendActiveReportList(ctx: Context): Promise<void> {
+  const reps = await prisma.report.findMany({
+    where: { status: { in: ["submitted", "under_review", "waiting_for_buyer", "waiting_for_seller"] } },
+    take: 20,
+    orderBy: { createdAt: "desc" },
+  });
+  const kb = new InlineKeyboard();
+  for (const r of reps) kb.text(r.reportCode, `rpa:v:${r.id}`).row();
+  await ctx.reply(reps.length ? "Active reports:" : "No active reports.", { reply_markup: kb });
 }
 
 export function createReportBot(): Bot<Context> {
@@ -79,6 +113,37 @@ export function createReportBot(): Bot<Context> {
         username: ctx.from.username,
         firstName: ctx.from.first_name,
       });
+      const u = await findUserByTelegramId(BigInt(ctx.from.id));
+      if (!u) {
+        await ctx.reply("Could not sync user.");
+        return;
+      }
+      const deal = await prisma.deal.findUnique({ where: { id: v.dealId } });
+      if (!deal || (deal.buyerId !== u.id && deal.sellerId !== u.id)) {
+        await ctx.reply("This secure link is not valid for your account on this deal.");
+        return;
+      }
+      const active = await findSubmittedReviewReportForDeal(v.dealId);
+      if (active) {
+        await markReportSessionUsed(v.sessionId);
+        await setWiz(BigInt(ctx.from.id), {
+          step: "append_collect",
+          reportId: active.id,
+          dealId: v.dealId,
+        });
+        await ctx.reply(
+          [
+            `⚖ Deal already has an open report (\`${active.reportCode}\`, ${active.status}).`,
+            "Upload *additional evidence* (photos, videos, documents, .zip/.rar/.7z).",
+            "",
+            TELEGRAM_FOLDER_UPLOAD_EXPLANATION_PLAIN,
+            "",
+            "Send `/append_done` when you are finished so admins are notified.",
+          ].join("\n"),
+          { parse_mode: "Markdown" },
+        );
+        return;
+      }
       await setWiz(BigInt(ctx.from.id), {
         step: "role",
         sessionId: v.sessionId,
@@ -149,7 +214,28 @@ export function createReportBot(): Bot<Context> {
   bot.on("message:text", async (ctx, next) => {
     if (!ctx.from || ctx.message.text.startsWith("/")) return next();
     const w = await getWiz(BigInt(ctx.from.id));
-    if (!w || w.step !== "describe") return next();
+    if (!w) return next();
+    if (w.step === "append_collect") {
+      const u = await findUserByTelegramId(BigInt(ctx.from.id));
+      if (!u) return;
+      const body = ctx.message.text.trim().slice(0, 8000);
+      if (!body) return next();
+      await appendReportEvidence({
+        reportId: w.reportId,
+        uploaderId: u.id,
+        evidenceType: "text",
+        text: body,
+      });
+      await ctx.reply(
+        [
+          "✅ Text saved as evidence.",
+          "",
+          formatUploadContinuationPlain("type /append_done when you are finished"),
+        ].join("\n"),
+      );
+      return;
+    }
+    if (w.step !== "describe") return next();
     const desc = ctx.message.text.trim().slice(0, 8000);
     const { id: reportId } = await createDraftReport({
       dealId: w.dealId,
@@ -174,7 +260,7 @@ export function createReportBot(): Bot<Context> {
   async function saveEvidence(ctx: Context, type: string, parts: Record<string, unknown>) {
     if (!ctx.from) return;
     const w = await getWiz(BigInt(ctx.from.id));
-    if (!w || w.step !== "collect") return;
+    if (!w || (w.step !== "collect" && w.step !== "append_collect")) return;
     const u = await findUserByTelegramId(BigInt(ctx.from.id));
     if (!u) return;
     await appendReportEvidence({
@@ -189,11 +275,12 @@ export function createReportBot(): Bot<Context> {
       fileSize: parts.fileSize as number | undefined,
       caption: parts.caption as string | undefined,
     });
+    const finish = w.step === "collect" ? "/report_done" : "/append_done";
     await ctx.reply(
       [
         "✅ Evidence attached.",
         "",
-        formatUploadContinuationPlain("type /report_done when you are finished"),
+        formatUploadContinuationPlain(`type ${finish} when you are finished`),
       ].join("\n"),
     );
   }
@@ -223,24 +310,25 @@ export function createReportBot(): Bot<Context> {
 
   bot.on("message:document", async (ctx) => {
     if (!ctx.from) return;
-    const d = ctx.message.document;
-    if (!d) return;
+    if (!("document" in ctx.message)) return;
+    const doc = ctx.message.document;
+    if (!doc) return;
     try {
       assertFileAllowed({
-        fileName: d.file_name,
-        mimeType: d.mime_type,
-        fileSize: d.file_size,
+        fileName: doc.file_name,
+        mimeType: doc.mime_type,
+        fileSize: doc.file_size,
       });
     } catch (e) {
       await ctx.reply(String((e as Error).message));
       return;
     }
     await saveEvidence(ctx, "document", {
-      fileId: d.file_id,
-      fileUniqueId: d.file_unique_id,
-      fileName: d.file_name ?? "document",
-      mimeType: d.mime_type,
-      fileSize: d.file_size,
+      fileId: doc.file_id,
+      fileUniqueId: doc.file_unique_id,
+      fileName: doc.file_name ?? "document",
+      mimeType: doc.mime_type,
+      fileSize: doc.file_size,
       caption: ctx.message.caption,
     });
   });
@@ -287,6 +375,18 @@ export function createReportBot(): Bot<Context> {
     }
   });
 
+  bot.command("append_done", async (ctx) => {
+    if (!ctx.from) return;
+    const w = await getWiz(BigInt(ctx.from.id));
+    if (!w || w.step !== "append_collect") {
+      await ctx.reply("No append-evidence session. Open a fresh secure link from the main OGMP MM bot (Report deal).");
+      return;
+    }
+    await clearWiz(BigInt(ctx.from.id));
+    await enqueueAdminReportMoreEvidence(w.reportId);
+    await ctx.reply("✅ Thanks — admins were notified that new evidence was added.");
+  });
+
   bot.command("admin", async (ctx) => {
     if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) {
       await ctx.reply("Forbidden");
@@ -300,20 +400,19 @@ export function createReportBot(): Bot<Context> {
   });
 
   bot.callbackQuery(/^rpa:list$/, async (ctx) => {
-    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
-    const reps = await prisma.report.findMany({
-      where: { status: { in: ["submitted", "under_review", "waiting_for_buyer", "waiting_for_seller"] } },
-      take: 20,
-      orderBy: { createdAt: "desc" },
-    });
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: "Forbidden", show_alert: true });
+      return;
+    }
     await ctx.answerCallbackQuery();
-    const kb = new InlineKeyboard();
-    for (const r of reps) kb.text(r.reportCode, `rpa:v:${r.id}`).row();
-    await ctx.reply(reps.length ? "Active reports:" : "No active reports.", { reply_markup: kb });
+    await sendActiveReportList(ctx);
   });
 
   bot.callbackQuery(/^rpa:v:(.+)$/, async (ctx) => {
-    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id)) || !ctx.match) return;
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id)) || !ctx.match) {
+      await ctx.answerCallbackQuery({ text: "Forbidden", show_alert: true });
+      return;
+    }
     const rep = await loadReportForAdmin(ctx.match[1]!);
     if (!rep) {
       await ctx.answerCallbackQuery({ text: "Not found", show_alert: true });
@@ -328,19 +427,213 @@ export function createReportBot(): Bot<Context> {
     ];
     await ctx.reply(lines.join("\n"), {
       parse_mode: "Markdown",
-      reply_markup: new InlineKeyboard()
-        .text("Release", `rpa:rel:${rep.id}`)
-        .text("Refund", `rpa:ref:${rep.id}`)
-        .row()
-        .text("Note", `rpa:note:${rep.id}`),
+      reply_markup: reportAdminDetailKb(rep.id),
     });
   });
 
-  bot.callbackQuery(/^rpa:rel:(.+)$/, async (ctx) => {
-    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id)) || !ctx.match) return;
+  bot.callbackQuery(/^rpa:ev:(.+)$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id)) || !ctx.match) {
+      await ctx.answerCallbackQuery({ text: "Forbidden", show_alert: true });
+      return;
+    }
+    const id = ctx.match[1]!;
+    const rep = await loadReportForAdmin(id);
+    if (!rep) {
+      await ctx.answerCallbackQuery({ text: "Not found", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    const digest = await buildAdminEvidenceDigest({ dealId: rep.dealId, reportId: rep.id });
+    const max = 3900;
+    for (let i = 0; i < digest.length; i += max) {
+      await ctx.reply(digest.slice(i, i + max));
+    }
+  });
+
+  bot.callbackQuery(/^rpa:under:(.+)$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id)) || !ctx.match) {
+      await ctx.answerCallbackQuery({ text: "Forbidden", show_alert: true });
+      return;
+    }
     const id = ctx.match[1]!;
     const rep = await prisma.report.findUnique({ where: { id } });
-    if (!rep) return;
+    if (!rep) {
+      await ctx.answerCallbackQuery({ text: "Not found", show_alert: true });
+      return;
+    }
+    await prisma.report.update({
+      where: { id },
+      data: { status: "under_review", updatedAt: new Date() },
+    });
+    await addReportAdminNote(id, BigInt(ctx.from.id), "Marked under review (report bot)");
+    await ctx.answerCallbackQuery({ text: "Status: under_review" });
+    await ctx.reply(`Report ${rep.reportCode} marked under review.`);
+  });
+
+  bot.callbackQuery(/^rpa:more:(.+)$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id)) || !ctx.match) {
+      await ctx.answerCallbackQuery({ text: "Forbidden", show_alert: true });
+      return;
+    }
+    const id = ctx.match[1]!;
+    const rep = await loadReportForAdmin(id);
+    if (!rep) {
+      await ctx.answerCallbackQuery({ text: "Not found", show_alert: true });
+      return;
+    }
+    await prisma.report.update({
+      where: { id },
+      data: { status: "waiting_for_buyer", updatedAt: new Date() },
+    });
+    await addReportAdminNote(id, BigInt(ctx.from.id), "Admin requested more proof (report bot)");
+    const line = `⚖ Admin requested *more proof* on deal \`${rep.deal.dealCode}\` (report \`${rep.reportCode}\`). Use **Report deal** in the main bot to open OGMP MM REPORT and finish with /append_done after uploads.`;
+    for (const u of [rep.deal.buyer, rep.deal.seller]) {
+      if (!u) continue;
+      await enqueueDealParticipantNotify({ targetTelegramId: u.telegramId, text: line });
+    }
+    await ctx.answerCallbackQuery({ text: "Parties notified" });
+    await ctx.reply("Report set to waiting_for_buyer; buyer and seller were notified.");
+  });
+
+  bot.callbackQuery(/^rpa:cl:(.+)$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id)) || !ctx.match) {
+      await ctx.answerCallbackQuery({ text: "Forbidden", show_alert: true });
+      return;
+    }
+    const id = ctx.match[1]!;
+    try {
+      await adminResolveReport({
+        reportId: id,
+        adminTelegramId: BigInt(ctx.from.id),
+        newStatus: "closed",
+        note: "Report closed by admin (report bot)",
+        dealAction: "unfreeze",
+      });
+      await ctx.answerCallbackQuery({ text: "Closed" });
+      await ctx.reply("Report closed and deal unfrozen (if it was frozen).");
+    } catch (e) {
+      await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
+    }
+  });
+
+  bot.callbackQuery(/^rpa:help$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: "Forbidden", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      [
+        "*Report bot admin*",
+        "",
+        "Commands: `/reports` · `/openreports` (same list) · `/deal DEAL_CODE` · `/user TELEGRAM_ID`",
+        "",
+        "Callbacks: View evidence (metadata digest), Mark under review, Request proof (notifies parties), Close report (unfreezes deal), Release / Refund.",
+        "",
+        "_Evidence digest lists filenames only — Telegram file\\_ids stay in the database._",
+      ].join("\n"),
+      { parse_mode: "Markdown" },
+    );
+  });
+
+  bot.command("reports", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) {
+      await ctx.reply("Forbidden");
+      return;
+    }
+    await sendActiveReportList(ctx);
+  });
+
+  bot.command("openreports", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) {
+      await ctx.reply("Forbidden");
+      return;
+    }
+    await sendActiveReportList(ctx);
+  });
+
+  bot.command("deal", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) {
+      await ctx.reply("Forbidden");
+      return;
+    }
+    const code = commandArgs(ctx.message?.text ?? "")[0];
+    if (!code) {
+      await ctx.reply("Usage: /deal DEAL_CODE");
+      return;
+    }
+    const deal = await prisma.deal.findUnique({ where: { dealCode: code } });
+    if (!deal) {
+      await ctx.reply("Deal not found.");
+      return;
+    }
+    const reps = await prisma.report.findMany({
+      where: { dealId: deal.id },
+      orderBy: { createdAt: "desc" },
+      take: 12,
+    });
+    const kb = new InlineKeyboard();
+    for (const r of reps) kb.text(`${r.reportCode} (${r.status})`, `rpa:v:${r.id}`).row();
+    await ctx.reply(
+      reps.length
+        ? `Reports for deal ${deal.dealCode} (${deal.status}):`
+        : `No reports for deal ${deal.dealCode} (${deal.status}).`,
+      { reply_markup: reps.length ? kb : undefined },
+    );
+  });
+
+  bot.command("user", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) {
+      await ctx.reply("Forbidden");
+      return;
+    }
+    const raw = commandArgs(ctx.message?.text ?? "")[0];
+    if (!raw) {
+      await ctx.reply("Usage: /user TELEGRAM_ID");
+      return;
+    }
+    let tg: bigint;
+    try {
+      tg = BigInt(raw);
+    } catch {
+      await ctx.reply("Invalid Telegram id.");
+      return;
+    }
+    const user = await prisma.user.findUnique({
+      where: { telegramId: tg },
+      include: {
+        dealsAsBuyer: { orderBy: { createdAt: "desc" }, take: 5, select: { dealCode: true, status: true } },
+        dealsAsSeller: { orderBy: { createdAt: "desc" }, take: 5, select: { dealCode: true, status: true } },
+      },
+    });
+    if (!user) {
+      await ctx.reply("User not found.");
+      return;
+    }
+    const buyerLines = user.dealsAsBuyer.map((d) => `• ${d.dealCode} (${d.status})`).join("\n") || "—";
+    const sellerLines = user.dealsAsSeller.map((d) => `• ${d.dealCode} (${d.status})`).join("\n") || "—";
+    await ctx.reply(
+      [
+        `User \`${user.telegramId.toString()}\` @${user.username ?? "n/a"}`,
+        `Banned: ${user.banned}`,
+        `Recent as buyer:\n${buyerLines}`,
+        `Recent as seller:\n${sellerLines}`,
+      ].join("\n\n"),
+      { parse_mode: "Markdown" },
+    );
+  });
+
+  bot.callbackQuery(/^rpa:rel:(.+)$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id)) || !ctx.match) {
+      await ctx.answerCallbackQuery({ text: "Forbidden", show_alert: true });
+      return;
+    }
+    const id = ctx.match[1]!;
+    const rep = await prisma.report.findUnique({ where: { id } });
+    if (!rep) {
+      await ctx.answerCallbackQuery({ text: "Not found", show_alert: true });
+      return;
+    }
     await adminForceRelease(rep.dealId, BigInt(ctx.from.id));
     await addReportAdminNote(id, BigInt(ctx.from.id), "Released via report bot");
     await prisma.report.update({
@@ -356,10 +649,16 @@ export function createReportBot(): Bot<Context> {
   });
 
   bot.callbackQuery(/^rpa:ref:(.+)$/, async (ctx) => {
-    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id)) || !ctx.match) return;
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id)) || !ctx.match) {
+      await ctx.answerCallbackQuery({ text: "Forbidden", show_alert: true });
+      return;
+    }
     const id = ctx.match[1]!;
     const rep = await prisma.report.findUnique({ where: { id } });
-    if (!rep) return;
+    if (!rep) {
+      await ctx.answerCallbackQuery({ text: "Not found", show_alert: true });
+      return;
+    }
     await adminForceRefund(rep.dealId, BigInt(ctx.from.id));
     await addReportAdminNote(id, BigInt(ctx.from.id), "Refunded via report bot");
     await prisma.report.update({
@@ -375,7 +674,10 @@ export function createReportBot(): Bot<Context> {
   });
 
   bot.callbackQuery(/^rpa:note:(.+)$/, async (ctx) => {
-    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) {
+      await ctx.answerCallbackQuery({ text: "Forbidden", show_alert: true });
+      return;
+    }
     await ctx.answerCallbackQuery();
     await ctx.reply("Send /note REPORT_ID your note text");
   });

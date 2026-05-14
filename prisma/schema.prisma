@@ -112,6 +112,11 @@ model User {
   username         String?
   firstName        String?   @map("first_name")
   termsAcceptedAt  DateTime? @map("terms_accepted_at")
+  /** User completed gateway flow (Continue). */
+  gatewayAcceptedAt DateTime? @map("gateway_accepted_at")
+  /** Last time membership was confirmed via Telegram API (when GATEWAY_CHAT_ID is used). */
+  gatewayVerifiedAt DateTime? @map("gateway_verified_at")
+  gatewayVerified  Boolean   @default(false) @map("gateway_verified")
   joinedAt         DateTime  @default(now()) @map("joined_at")
   banned           Boolean   @default(false)
   bannedReason     String?   @map("banned_reason")
@@ -174,6 +179,10 @@ model Deal {
   paymentAddress   String?     @map("payment_address")
   paymentProviderRef String?   @map("payment_provider_ref")
   paymentExpiresAt DateTime?   @map("payment_expires_at")
+  /** Set after payment-confirmed delivery unlock + buyer/seller notifications (idempotency). */
+  deliveryUnlockNotifiedAt DateTime? @map("delivery_unlock_notified_at")
+  /** After buyer receives the bundled delivery file DMs (auto-send or Download). */
+  deliveryFilesBundleSentAt DateTime? @map("delivery_files_bundle_sent_at")
   txHash           String?     @map("tx_hash")
   fundedAt         DateTime?   @map("funded_at")
   deliveredAt      DateTime?   @map("delivered_at")
@@ -233,6 +242,10 @@ model DealMessage {
   mimeType             String?         @map("mime_type")
   fileSize             Int?            @map("file_size")
   caption              String?
+  /** Buyer cannot access telegram file ids until payment confirms and unlock runs. */
+  lockedForBuyer       Boolean         @default(false) @map("locked_for_buyer")
+  /** Included in auto-send / Download bundle for this deal. */
+  deliveryAsset        Boolean         @default(false) @map("delivery_asset")
   createdAt            DateTime        @default(now()) @map("created_at")
 
   deal   Deal @relation(fields: [dealId], references: [id], onDelete: Cascade)

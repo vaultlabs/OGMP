@@ -4,8 +4,10 @@ import { Api } from "grammy";
 import { loadConfig, getMainBotToken } from "../config/index.js";
 import { logger } from "../utils/logger.js";
 import { NOTIFICATION_QUEUE_NAME } from "../modules/notifications/notificationQueue.service.js";
-import type { AdminReportJob, DmJob } from "../modules/notifications/notificationQueue.service.js";
-import { notifyAdminsReportSubmitted } from "../modules/reports/report-notify.service.js";
+import type { AdminReportJob, BuyerDeliveryJob, DmJob } from "../modules/notifications/notificationQueue.service.js";
+import { notifyAdminsReportSubmitted, notifyAdminsReportMoreEvidence } from "../modules/reports/report-notify.service.js";
+import { sendBuyerDeliveryBundleToChat } from "../services/buyer-delivery-send.service.js";
+import { InlineKeyboard } from "grammy";
 
 let worker: Worker | null = null;
 let workerConnection: Redis | null = null;
@@ -23,8 +25,28 @@ export function startNotificationWorker(): Worker | null {
     async (job: Job) => {
       if (job.name === "dm") {
         const data = job.data as DmJob;
-        await api.sendMessage(data.chatId, data.text, {
-          parse_mode: data.parseMode ?? "Markdown",
+        if (data.buttons?.length) {
+          const kb = new InlineKeyboard();
+          for (const row of data.buttons) {
+            for (const b of row) kb.text(b.text, b.cb);
+            kb.row();
+          }
+          await api.sendMessage(data.chatId, data.text, {
+            parse_mode: data.parseMode ?? "Markdown",
+            reply_markup: kb,
+          });
+        } else {
+          await api.sendMessage(data.chatId, data.text, {
+            parse_mode: data.parseMode ?? "Markdown",
+          });
+        }
+        return;
+      }
+      if (job.name === "buyer_delivery") {
+        const data = job.data as BuyerDeliveryJob;
+        await sendBuyerDeliveryBundleToChat({
+          buyerTelegramId: data.buyerTelegramId,
+          dealId: data.dealId,
         });
         return;
       }
@@ -32,6 +54,8 @@ export function startNotificationWorker(): Worker | null {
         const data = job.data as AdminReportJob;
         if (data.type === "admin_report_submitted") {
           await notifyAdminsReportSubmitted(data.reportId);
+        } else if (data.type === "admin_report_more_evidence") {
+          await notifyAdminsReportMoreEvidence(data.reportId);
         }
       }
     },

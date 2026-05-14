@@ -22,6 +22,8 @@ const envSchema = z
     NOWPAYMENTS_IPN_SECRET: z.string().optional(),
     PUBLIC_BASE_URL: z.string().url().optional(),
     AUTO_RELEASE_ENABLED: z.coerce.boolean().default(false),
+    /** After escrow payment confirms, DM buyer each delivery file_id from the deal (if false, only a Download button). */
+    AUTO_SEND_DELIVERY_AFTER_PAYMENT: z.coerce.boolean().default(true),
     MOCK_WEBHOOK_SECRET: z.string().optional(),
     RATE_LIMIT_WINDOW_MS: z.coerce.number().default(10_000),
     RATE_LIMIT_MAX: z.coerce.number().default(30),
@@ -38,6 +40,12 @@ const envSchema = z
     MAX_FEE: z.string().optional(),
     /** Run BullMQ notification worker in-process */
     NOTIFICATION_WORKER_ENABLED: z.coerce.boolean().default(true),
+    /** Require joining OGMP gateway before using the escrow bot (overridable via BotSetting). */
+    REQUIRE_GATEWAY_JOIN: z.coerce.boolean().default(true),
+    GATEWAY_JOIN_URL: z.string().url().default("https://t.me/OGMP_GatewayBot"),
+    GATEWAY_USERNAME: z.string().default("@OGMP_GatewayBot"),
+    /** Optional: numeric channel/supergroup id for getChatMember (e.g. -100…). Empty = honor-system on Continue. */
+    GATEWAY_CHAT_ID: z.string().optional().default(""),
   })
   .superRefine((data, ctx) => {
     if (!data.MAIN_BOT_TOKEN && !data.TELEGRAM_BOT_TOKEN) {

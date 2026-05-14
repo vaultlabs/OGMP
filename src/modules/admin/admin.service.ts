@@ -7,6 +7,7 @@ import { ForbiddenError, NotFoundError, StateMachineError } from "../../utils/er
 import { getPaymentProvider } from "../../payments/index.js";
 import { isAdminTelegramId } from "../../config/index.js";
 import { applyDealReleasedStats } from "../../services/reputation.service.js";
+import { appendDealTimelineEvent } from "../dealTimeline/timeline.service.js";
 
 function assertAdmin(telegramId: bigint): void {
   if (!isAdminTelegramId(telegramId)) throw new ForbiddenError("Admin only");
@@ -72,6 +73,18 @@ export async function adminForceRelease(dealId: string, adminTelegramId: bigint)
     metadata: { fromStatus: deal.status },
   });
   await writeAuditLog({ eventType: "admin_force_release", dealId, metadata: { admin: adminTelegramId.toString() } });
+  await appendDealTimelineEvent({
+    dealId,
+    actorId: null,
+    eventType: "admin_decision",
+    metadata: { action: "force_release", admin: adminTelegramId.toString(), fromStatus: deal.status },
+  });
+  await appendDealTimelineEvent({
+    dealId,
+    actorId: null,
+    eventType: "funds_released",
+    metadata: { via: "admin_force_release" },
+  });
   const released = await prisma.deal.findUniqueOrThrow({ where: { id: dealId } });
   await applyDealReleasedStats(released);
 }
@@ -96,6 +109,18 @@ export async function adminForceRefund(dealId: string, adminTelegramId: bigint):
   });
   await logAdminAction({ adminTelegramId, action: "force_refund", dealId, metadata: { fromStatus: deal.status } });
   await writeAuditLog({ eventType: "admin_force_refund", dealId, metadata: { admin: adminTelegramId.toString() } });
+  await appendDealTimelineEvent({
+    dealId,
+    actorId: null,
+    eventType: "admin_decision",
+    metadata: { action: "force_refund", admin: adminTelegramId.toString(), fromStatus: deal.status },
+  });
+  await appendDealTimelineEvent({
+    dealId,
+    actorId: null,
+    eventType: "deal_closed",
+    metadata: { reason: "refunded", via: "admin_force_refund" },
+  });
 }
 
 export async function adminCancelDeal(dealId: string, adminTelegramId: bigint): Promise<void> {

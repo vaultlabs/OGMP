@@ -316,7 +316,19 @@ export async function markDelivered(sellerId: string, dealId: string): Promise<D
     if (bu) {
       await enqueueDealParticipantNotify({
         targetTelegramId: bu.telegramId,
-        text: `📦 Seller marked *delivered* on deal \`${deal.dealCode}\`. Please review and confirm when satisfied.`,
+        text: [
+          "OGMP MM — Seller marked delivered",
+          "",
+          `Deal: *${deal.dealCode}*`,
+          "",
+          "Next: review everything, then confirm release or open a dispute.",
+        ].join("\n"),
+        buttons: [
+          [
+            { text: "View deal", cb: `d:v:${deal.dealCode}` },
+            { text: "Confirm received", cb: `d:rel:${deal.dealCode}` },
+          ],
+        ],
       });
     }
   }
@@ -359,7 +371,14 @@ export async function buyerConfirmRelease(buyerId: string, dealId: string): Prom
       if (su) {
         await enqueueDealParticipantNotify({
           targetTelegramId: su.telegramId,
-          text: `✅ Buyer confirmed — funds *released* on deal \`${deal.dealCode}\` (auto).`,
+          text: [
+            "OGMP MM — Funds released",
+            "",
+            `Deal: *${deal.dealCode}*`,
+            "",
+            "Buyer confirmed — escrow release completed (auto).",
+          ].join("\n"),
+          buttons: [[{ text: "View deal", cb: `d:v:${deal.dealCode}` }]],
         });
       }
     }
@@ -385,7 +404,14 @@ export async function buyerConfirmRelease(buyerId: string, dealId: string): Prom
     if (su) {
       await enqueueDealParticipantNotify({
         targetTelegramId: su.telegramId,
-        text: `✅ Buyer confirmed receipt on \`${deal.dealCode}\`. Release is pending admin approval.`,
+        text: [
+          "OGMP MM — Buyer confirmed",
+          "",
+          `Deal: *${deal.dealCode}*`,
+          "",
+          "Release is pending admin approval.",
+        ].join("\n"),
+        buttons: [[{ text: "View deal", cb: `d:v:${deal.dealCode}` }]],
       });
     }
   }
