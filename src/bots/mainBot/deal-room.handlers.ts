@@ -15,14 +15,12 @@ import {
 } from "../../utils/upload-guidance.js";
 import { assertFileAllowed } from "../../utils/file-safety.js";
 import { replyTextForCaughtError } from "../../utils/user-facing-errors.js";
-import { redisIncrWithTtl } from "../../utils/redis.js";
 import {
   notifyBuyerPaymentRequired,
   sellerFileSecuredKeyboard,
   sellerFileSecuredText,
 } from "../../services/delivery.service.js";
 import { formatDealRoomEntryPlain } from "./deal-room-welcome.js";
-import { MAIN_UI_PARSE_MODE } from "./trust-copy.js";
 
 async function resolveDealIdFromCode(code: string): Promise<string | null> {
   const d = await prisma.deal.findUnique({ where: { dealCode: code } });
@@ -113,15 +111,10 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
     const deal = await prisma.deal.findUnique({ where: { id: dealId } });
     if (!deal) return;
     const hasFile = !!fileId;
-    if (hasFile) {
-      const ul = await redisIncrWithTtl(`rl:ul:${dealId}`, 60);
-      if (ul > 30) {
-        await ctx.reply("Too many uploads for this deal in a short window. Please wait a minute.");
-        return;
-      }
-    }
     const sellerLocked =
-      deal.sellerId === u.id && hasFile && !deal.fundedAt;
+      deal.sellerId === u.id &&
+      hasFile &&
+      (deal.status === "waiting_payment" || deal.status === "payment_detected");
     try {
       await saveDealRoomMessage({
         dealId,
@@ -141,7 +134,6 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
       if (sellerLocked) {
         const fn = fileName ?? type;
         await ctx.reply(sellerFileSecuredText(deal.dealCode, fn), {
-          parse_mode: MAIN_UI_PARSE_MODE,
           reply_markup: sellerFileSecuredKeyboard(deal.dealCode),
         });
         await notifyBuyerPaymentRequired(dealId);

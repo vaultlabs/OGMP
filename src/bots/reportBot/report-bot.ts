@@ -27,7 +27,7 @@ import type { ParticipantRole, ReportCategory } from "@prisma/client";
 import { adminForceRefund, adminForceRelease } from "../../modules/admin/admin.service.js";
 import { buildAdminEvidenceDigest } from "../../modules/reports/evidence-view.service.js";
 import { enqueueAdminReportMoreEvidence, enqueueDealParticipantNotify } from "../../modules/notifications/notificationQueue.service.js";
-import { MAIN_UI_PARSE_MODE, REPORT_BOT_HOME_PAGE } from "../mainBot/trust-copy.js";
+import { REPORT_BOT_HOME_PAGE } from "../mainBot/trust-copy.js";
 
 const WIZ = (id: bigint) => `ogmp:report_wiz:${id.toString()}`;
 
@@ -125,7 +125,7 @@ export function createReportBot(): Bot<Context> {
       const sup = cfg.SUPPORT_USERNAME?.trim().replace(/^@+/, "");
       if (sup) kb.url("Contact Support", `https://t.me/${sup}`);
       else kb.text("Contact Support", "r:hint:sup");
-      await ctx.reply(REPORT_BOT_HOME_PAGE, { parse_mode: MAIN_UI_PARSE_MODE, reply_markup: kb });
+      await ctx.reply(REPORT_BOT_HOME_PAGE, { reply_markup: kb });
       return;
     }
     const raw = arg.slice("report_".length);

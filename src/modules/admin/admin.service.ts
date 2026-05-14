@@ -1,17 +1,14 @@
-import type { DealStatus, FeePayer, PayoutStatus } from "@prisma/client";
+import type { DealStatus, FeePayer } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
 import { logAdminAction } from "./admin.repository.js";
 import { writeAuditLog } from "../../services/audit.service.js";
-import { ForbiddenError, NotFoundError, StateMachineError, ValidationError } from "../../utils/errors.js";
+import { ForbiddenError, NotFoundError, StateMachineError } from "../../utils/errors.js";
 import { getPaymentProvider } from "../../payments/index.js";
 import { isAdminTelegramId } from "../../config/index.js";
 import { applyDealReleasedStats } from "../../services/reputation.service.js";
 import { onDealReleasedSideEffects } from "../../services/deal-completion-notify.service.js";
 import { appendDealTimelineEvent } from "../dealTimeline/timeline.service.js";
-import { ensurePaymentInstruction } from "../deals/deal.service.js";
-import { enqueueDealParticipantNotify } from "../notifications/notificationQueue.service.js";
-import { getRequirePayoutDoubleConfirm } from "../../services/platform-settings.service.js";
 
 function assertAdmin(telegramId: bigint): void {
   if (!isAdminTelegramId(telegramId)) throw new ForbiddenError("Admin only");
@@ -43,21 +40,6 @@ export async function adminForceRelease(dealId: string, adminTelegramId: bigint)
   if (!ADMIN_RELEASE_FROM.includes(deal.status)) {
     throw new StateMachineError("Cannot force release from this status");
   }
-  if (!deal.sellerPayoutAddress?.trim()) {
-    throw new StateMachineError("Seller payout wallet is required before admin release.");
-  }
-  if ((await getRequirePayoutDoubleConfirm()) && !deal.sellerPayoutConfirmedAt) {
-    throw new StateMachineError("Seller payout wallet must be double-confirmed (deal card) before release.");
-  }
-  const openPayout = await prisma.payout.findFirst({
-    where: {
-      dealId,
-      status: { in: ["pending", "processing"] },
-    },
-  });
-  if (openPayout) {
-    throw new StateMachineError("A payout is already queued for this deal. Update that payout record before forcing another release.");
-  }
   await prisma.deal.update({
     where: { id: dealId, version: deal.version },
     data: {
@@ -82,7 +64,6 @@ export async function adminForceRelease(dealId: string, adminTelegramId: bigint)
         toAddress: deal.sellerPayoutAddress,
         status: "pending",
         providerRef: `${provider.name}:admin_release`,
-        adminNote: `Admin force release (telegram ${adminTelegramId}). Set tx hash when payout is sent.`,
       },
     });
   }
@@ -212,116 +193,4 @@ export async function exportDealsCsv(): Promise<string> {
       .join(","),
   );
   return [header, ...lines].join("\n");
-}
-
-export async function adminApproveHighValueDeal(dealCode: string, adminTelegramId: bigint): Promise<void> {
-  assertAdmin(adminTelegramId);
-  const deal = await prisma.deal.findUnique({ where: { dealCode } });
-  if (!deal) throw new NotFoundError("Deal not found");
-  if (deal.highValueApproval !== "pending") {
-    throw new StateMachineError("This deal is not waiting for high-value approval");
-  }
-  await prisma.deal.update({
-    where: { id: deal.id, version: deal.version },
-    data: { highValueApproval: "approved", version: { increment: 1 } },
-  });
-  await logAdminAction({
-    adminTelegramId,
-    action: "high_value_approved",
-    dealId: deal.id,
-    metadata: { dealCode },
-  });
-  await appendDealTimelineEvent({
-    dealId: deal.id,
-    actorId: null,
-    eventType: "admin_decision",
-    metadata: { action: "high_value_approved", admin: adminTelegramId.toString() },
-  });
-  await ensurePaymentInstruction(deal.id);
-}
-
-export async function adminRejectHighValueDeal(dealCode: string, adminTelegramId: bigint): Promise<void> {
-  assertAdmin(adminTelegramId);
-  const deal = await prisma.deal.findUnique({ where: { dealCode } });
-  if (!deal) throw new NotFoundError("Deal not found");
-  if (deal.highValueApproval !== "pending") {
-    throw new StateMachineError("This deal is not waiting for high-value approval");
-  }
-  await prisma.deal.update({
-    where: { id: deal.id, version: deal.version },
-    data: { highValueApproval: "rejected", version: { increment: 1 } },
-  });
-  await logAdminAction({
-    adminTelegramId,
-    action: "high_value_rejected",
-    dealId: deal.id,
-    metadata: { dealCode },
-  });
-  await appendDealTimelineEvent({
-    dealId: deal.id,
-    actorId: null,
-    eventType: "admin_decision",
-    metadata: { action: "high_value_rejected", admin: adminTelegramId.toString() },
-  });
-}
-
-export async function adminUpdateManualPayout(params: {
-  dealId: string;
-  adminTelegramId: bigint;
-  status: PayoutStatus;
-  txHash?: string | null;
-  adminNote?: string | null;
-}): Promise<void> {
-  assertAdmin(params.adminTelegramId);
-  const p = await prisma.payout.findFirst({
-    where: { dealId: params.dealId },
-    orderBy: { createdAt: "desc" },
-  });
-  if (!p) throw new NotFoundError("No payout record for this deal");
-  const deal = await prisma.deal.findUnique({
-    where: { id: params.dealId },
-    include: { seller: true },
-  });
-  const notify = params.status === "completed";
-  const nextTx = params.txHash !== undefined ? params.txHash : p.txHash;
-  const nextNote = params.adminNote !== undefined ? params.adminNote : p.adminNote;
-  if (params.status === "completed") {
-    const hasTx = Boolean(nextTx?.trim());
-    const hasNote = Boolean(nextNote?.trim());
-    if (!hasTx && !hasNote) {
-      throw new ValidationError(
-        "Marking a payout completed requires a non-empty transaction hash or admin note (on-chain id or ops explanation).",
-      );
-    }
-  }
-  await prisma.payout.update({
-    where: { id: p.id },
-    data: {
-      status: params.status,
-      ...(params.txHash !== undefined ? { txHash: params.txHash } : {}),
-      ...(params.adminNote !== undefined ? { adminNote: params.adminNote } : {}),
-      ...(notify && !p.sellerNotifiedSentAt ? { sellerNotifiedSentAt: new Date() } : {}),
-    },
-  });
-  await logAdminAction({
-    adminTelegramId: params.adminTelegramId,
-    action: "manual_payout_update",
-    dealId: params.dealId,
-    metadata: { payoutId: p.id, status: params.status },
-  });
-  if (notify && deal?.seller && !p.sellerNotifiedSentAt) {
-    await enqueueDealParticipantNotify({
-      targetTelegramId: deal.seller.telegramId,
-      text: [
-        "OGMP MM — Payout update",
-        "",
-        `Deal ${deal.dealCode}: payout was marked as sent by operations.`,
-        params.txHash ? `Tx: ${params.txHash}` : "",
-        params.adminNote ? `Note: ${params.adminNote}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-      buttons: [[{ text: "View deal", cb: `d:v:${deal.dealCode}` }]],
-    });
-  }
 }

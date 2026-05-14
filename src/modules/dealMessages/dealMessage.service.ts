@@ -5,11 +5,6 @@ import { ForbiddenError, NotFoundError, ValidationError } from "../../utils/erro
 import { appendDealTimelineEvent } from "../dealTimeline/timeline.service.js";
 import { enqueueDealParticipantNotify } from "../notifications/notificationQueue.service.js";
 
-/** Buyer may receive Telegram file identifiers only after on-chain payment is confirmed (deal funded). */
-export function buyerMayReceiveDealRoomFiles(deal: { fundedAt: Date | null }): boolean {
-  return deal.fundedAt != null;
-}
-
 export type DealMessageWithSender = Awaited<ReturnType<typeof listDealMessages>>[number];
 
 export async function saveDealRoomMessage(params: {
@@ -98,10 +93,8 @@ export async function listDealMessages(dealId: string, requesterUserId: string) 
     include: { sender: true },
   });
   const isBuyer = deal.buyerId === requesterUserId;
-  const buyerUnlocked = buyerMayReceiveDealRoomFiles(deal);
   return rows.map((m) => {
-    const hasTelegramFile = Boolean(m.telegramFileId || m.telegramFileUniqueId);
-    if (isBuyer && hasTelegramFile && (!buyerUnlocked || m.lockedForBuyer)) {
+    if (isBuyer && m.lockedForBuyer) {
       return {
         ...m,
         telegramFileId: null,
@@ -118,7 +111,7 @@ export async function countLockedDeliveryMessages(dealId: string): Promise<numbe
 
 export async function listDeliveryAssetMessagesForDeal(dealId: string) {
   const deal = await prisma.deal.findUnique({ where: { id: dealId } });
-  if (!deal?.sellerId || !buyerMayReceiveDealRoomFiles(deal)) return [];
+  if (!deal?.sellerId) return [];
   const primary = await prisma.dealMessage.findMany({
     where: { dealId, deliveryAsset: true, telegramFileId: { not: null } },
     orderBy: { createdAt: "asc" },

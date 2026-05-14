@@ -1,7 +1,6 @@
 import { prisma } from "../db/prisma.js";
 import { applyPaymentSyncForDeal } from "../modules/payments/payment.service.js";
 import { logger } from "../utils/logger.js";
-import { touchLastPaymentWatch } from "../services/platform-settings.service.js";
 
 export async function runPaymentWatcherOnce(): Promise<void> {
   const deals = await prisma.deal.findMany({
@@ -16,5 +15,4 @@ export async function runPaymentWatcherOnce(): Promise<void> {
       logger.error("payment_watcher_deal_failed", { dealId: d.id, err: String(e) });
     }
   }
-  await touchLastPaymentWatch();
 }

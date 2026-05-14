@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "../db/prisma.js";
-import { COMMUNITY_TRUST_LINE, RULER_HTML, TRUST_OPS_FOOTER } from "../bots/mainBot/trust-copy.js";
+import { COMMUNITY_TRUST_LINE, TRUST_OPS_FOOTER } from "../bots/mainBot/trust-copy.js";
 import { enqueueDealParticipantNotify } from "../modules/notifications/notificationQueue.service.js";
 import { logger } from "../utils/logger.js";
-import { escapeTelegramHtml } from "../utils/telegram-html.js";
 
-export function formatReceiptHtml(deal: {
+export function formatReceiptPlain(deal: {
   dealCode: string;
   buyer: { firstName: string | null; username: string | null } | null;
   seller: { firstName: string | null; username: string | null } | null;
@@ -19,51 +18,32 @@ export function formatReceiptHtml(deal: {
 }): string {
   const b =
     deal.buyer?.username != null && deal.buyer.username !== ""
-      ? `@${escapeTelegramHtml(deal.buyer.username)}`
-      : escapeTelegramHtml(deal.buyer?.firstName ?? "Buyer");
+      ? `@${deal.buyer.username}`
+      : deal.buyer?.firstName ?? "Buyer";
   const s =
     deal.seller?.username != null && deal.seller.username !== ""
-      ? `@${escapeTelegramHtml(deal.seller.username)}`
-      : escapeTelegramHtml(deal.seller?.firstName ?? "Seller");
-  const statusLabel = deal.status === "released" ? "Completed" : deal.status.replace(/_/g, " ");
-  const completed = deal.releasedAt?.toISOString().slice(0, 19) ?? "—";
-  const tx = deal.txHash ?? "—";
+      ? `@${deal.seller.username}`
+      : deal.seller?.firstName ?? "Seller";
   return [
-    `<b>OGMP MM</b> · <i>Deal receipt</i>`,
-    RULER_HTML,
+    "━━━━━━━━━━━━━━━━━━",
+    "OGMP MM — Deal Receipt",
+    "━━━━━━━━━━━━━━━━━━",
     "",
-    `<b>Deal ID</b> <code>${escapeTelegramHtml(deal.dealCode)}</code>`,
-    `<b>Buyer</b> ${b}`,
-    `<b>Seller</b> ${s}`,
-    `<b>Amount</b> ${escapeTelegramHtml(deal.amount.toString())} ${escapeTelegramHtml(deal.currency)}`,
-    `<b>Network</b> ${escapeTelegramHtml(deal.network)}`,
-    `<b>Fee</b> ${escapeTelegramHtml(deal.feeAmount.toString())}`,
-    `<b>Status</b> ${escapeTelegramHtml(statusLabel)}`,
-    `<b>Completed at</b> ${escapeTelegramHtml(completed)}Z`,
-    `<b>Transaction hash</b> <code>${escapeTelegramHtml(tx)}</code>`,
+    `Deal ID: ${deal.dealCode}`,
+    `Buyer: ${b}`,
+    `Seller: ${s}`,
+    `Amount: ${deal.amount.toString()} ${deal.currency}`,
+    `Network: ${deal.network}`,
+    `Fee: ${deal.feeAmount.toString()}`,
+    `Status: ${deal.status === "released" ? "Completed" : deal.status}`,
+    `Completed at: ${deal.releasedAt?.toISOString().slice(0, 19) ?? "—"}Z`,
+    `Transaction hash: ${deal.txHash ?? "—"}`,
     "",
-    "<b>Thank you</b> for using OGMP MM.",
+    "Thank you for using OGMP MM.",
     "",
-    `<i>${escapeTelegramHtml(COMMUNITY_TRUST_LINE)}</i>`,
+    COMMUNITY_TRUST_LINE,
     "",
-    `<i>${escapeTelegramHtml(TRUST_OPS_FOOTER)}</i>`,
-  ].join("\n");
-}
-
-function rateNudgeHtml(subject: "seller" | "buyer"): string {
-  const what =
-    subject === "seller"
-      ? "Rate the seller (optional text after you pick stars)."
-      : "Rate the buyer (optional text after you pick stars).";
-  return [
-    `<b>OGMP MM</b> · <i>Rate this deal</i>`,
-    RULER_HTML,
-    "",
-    `<b>What</b> ${escapeTelegramHtml(what)}`,
-    "<b>Safe</b> Deal is already completed.",
-    "<b>Next</b> Tap 1–5 stars.",
-    "",
-    `<i>${escapeTelegramHtml(TRUST_OPS_FOOTER)}</i>`,
+    TRUST_OPS_FOOTER,
   ].join("\n");
 }
 
@@ -85,7 +65,7 @@ export async function onDealReleasedSideEffects(dealId: string): Promise<void> {
       return;
     }
 
-    const receiptBody = formatReceiptHtml(deal);
+    const receiptBody = formatReceiptPlain(deal);
     const payload = {
       dealCode: deal.dealCode,
       buyerId: deal.buyerId,
@@ -116,7 +96,6 @@ export async function onDealReleasedSideEffects(dealId: string): Promise<void> {
     await enqueueDealParticipantNotify({
       targetTelegramId: deal.buyer.telegramId,
       text: receiptBody,
-      parseMode: "HTML",
       buttons: [
         [{ text: "Download receipt", cb: `rcpt:${deal.dealCode}` }],
         [{ text: "Rate user", cb: `ropen:${deal.dealCode}` }],
@@ -126,7 +105,6 @@ export async function onDealReleasedSideEffects(dealId: string): Promise<void> {
     await enqueueDealParticipantNotify({
       targetTelegramId: deal.seller.telegramId,
       text: receiptBody,
-      parseMode: "HTML",
       buttons: [
         [{ text: "Download receipt", cb: `rcpt:${deal.dealCode}` }],
         [{ text: "Rate user", cb: `ropen:${deal.dealCode}` }],
@@ -137,8 +115,17 @@ export async function onDealReleasedSideEffects(dealId: string): Promise<void> {
     if (!buyerReview) {
       await enqueueDealParticipantNotify({
         targetTelegramId: deal.buyer.telegramId,
-        text: rateNudgeHtml("seller"),
-        parseMode: "HTML",
+        text: [
+          "━━━━━━━━━━━━━━━━━━",
+          "Rate this deal",
+          "━━━━━━━━━━━━━━━━━━",
+          "",
+          "What: rate the seller (optional text after).",
+          "Safe: deal is already completed.",
+          "Next: tap 1–5 stars.",
+          "",
+          TRUST_OPS_FOOTER,
+        ].join("\n"),
         buttons: rateButtons(deal.dealCode, "S"),
       });
     }
@@ -146,8 +133,17 @@ export async function onDealReleasedSideEffects(dealId: string): Promise<void> {
     if (!sellerReview) {
       await enqueueDealParticipantNotify({
         targetTelegramId: deal.seller.telegramId,
-        text: rateNudgeHtml("buyer"),
-        parseMode: "HTML",
+        text: [
+          "━━━━━━━━━━━━━━━━━━",
+          "Rate this deal",
+          "━━━━━━━━━━━━━━━━━━",
+          "",
+          "What: rate the buyer (optional text after).",
+          "Safe: deal is already completed.",
+          "Next: tap 1–5 stars.",
+          "",
+          TRUST_OPS_FOOTER,
+        ].join("\n"),
         buttons: rateButtons(deal.dealCode, "B"),
       });
     }

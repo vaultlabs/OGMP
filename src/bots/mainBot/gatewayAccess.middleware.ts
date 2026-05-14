@@ -7,7 +7,6 @@ import {
   GATEWAY_ACCESS_REQUIRED_SHORT,
   gatewayAccessKeyboard,
 } from "../../modules/gateway/gateway-messages.js";
-import { MAIN_UI_PARSE_MODE } from "./trust-copy.js";
 
 /** Commands and callbacks allowed before gateway access. */
 export function isGatewayExempt(ctx: Context): boolean {
@@ -70,7 +69,6 @@ export async function gatewayAccessMiddleware(ctx: Context, next: NextFunction):
       await ctx.answerCallbackQuery({ text: "Join the gateway first.", show_alert: true });
     }
     await ctx.reply(GATEWAY_ACCESS_REQUIRED_SHORT, {
-      parse_mode: MAIN_UI_PARSE_MODE,
       reply_markup: gatewayAccessKeyboard(eff.joinUrl),
     });
     return;
@@ -84,7 +82,6 @@ export async function gatewayAccessMiddleware(ctx: Context, next: NextFunction):
     await ctx.answerCallbackQuery({ text: "Join the gateway first.", show_alert: true });
   }
   await ctx.reply(GATEWAY_ACCESS_REQUIRED_SHORT, {
-    parse_mode: MAIN_UI_PARSE_MODE,
     reply_markup: gatewayAccessKeyboard(eff.joinUrl),
   });
 }

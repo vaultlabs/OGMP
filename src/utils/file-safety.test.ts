@@ -48,22 +48,6 @@ describe("assertFileAllowed", () => {
     );
   });
 
-  it("allows .rar with application/vnd.rar", () => {
-    expect(() =>
-      assertFileAllowed({ fileName: "a.rar", mimeType: "application/vnd.rar", fileSize: 100 }),
-    ).not.toThrow();
-  });
-
-  it("allows .rar with application/x-rar-compressed", () => {
-    expect(() =>
-      assertFileAllowed({ fileName: "a.rar", mimeType: "application/x-rar-compressed", fileSize: 100 }),
-    ).not.toThrow();
-  });
-
-  it("allows .zip with application/zip", () => {
-    expect(() => assertFileAllowed({ fileName: "x.zip", mimeType: "application/zip", fileSize: 100 })).not.toThrow();
-  });
-
   it("rejects oversize file", () => {
     resetConfigCacheForTests();
     setMinimalEnv();

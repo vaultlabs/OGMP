@@ -12,51 +12,40 @@ import {
   enqueueDealParticipantNotify,
 } from "../modules/notifications/notificationQueue.service.js";
 import { userFacingDealStatus } from "../modules/deals/user-facing-status.js";
-import {
-  COMMUNITY_TRUST_LINE,
-  MAIN_UI_PARSE_MODE,
-  RULER_HTML,
-  TRUST_OPS_FOOTER,
-} from "../bots/mainBot/trust-copy.js";
-import { escapeTelegramHtml } from "../utils/telegram-html.js";
+import { COMMUNITY_TRUST_LINE, DEAL_PROTECTION_BEFORE_PAY, TRUST_OPS_FOOTER } from "../bots/mainBot/trust-copy.js";
 
-function trustFooterHtml(): string {
-  return [
-    "",
-    `<i>${escapeTelegramHtml(TRUST_OPS_FOOTER)}</i>`,
-    "",
-    `<i>${escapeTelegramHtml(COMMUNITY_TRUST_LINE)}</i>`,
-  ].join("\n");
-}
+const DIV = "━━━━━━━━━━━━━━━━━━";
 
 export function sellerFileSecuredText(dealCode: string, fileName: string): string {
-  const dc = escapeTelegramHtml(dealCode);
-  const fn = escapeTelegramHtml(fileName);
   return [
-    `<b>OGMP MM</b> · <i>Delivery vault</i>`,
-    RULER_HTML,
+    DIV,
+    "OGMP MM — Delivery Vault",
+    DIV,
     "",
-    `<b>Deal</b> ${dc}`,
+    `Deal: ${dealCode}`,
     "",
-    "<b>What</b> Your file is locked in the Delivery Vault.",
-    "<b>Safe</b> The buyer cannot download until Deal Protection (payment) completes.",
-    "<b>Next</b> Wait for payment, or add another file, then <b>Submit Delivery</b>.",
+    "What: your file is locked in the Delivery Vault.",
+    "Safe: buyer cannot download until Deal Protection (payment) completes.",
+    "Next: wait for buyer pay, or add another file then Submit Delivery.",
     "",
-    `<b>File</b> <code>${fn}</code>`,
+    `File: ${fileName}`,
     "",
-    "<i>Only upload files intended for this deal.</i>",
-    trustFooterHtml(),
+    "Only upload files for this deal.",
+    "",
+    TRUST_OPS_FOOTER,
+    "",
+    COMMUNITY_TRUST_LINE,
   ].join("\n");
 }
 
 export function sellerFileSecuredKeyboard(dealCode: string): InlineKeyboard {
   return new InlineKeyboard()
-    .text("Upload another file", `dr:enter:${dealCode}`)
+    .text("Upload Another File", `dr:enter:${dealCode}`)
     .row()
-    .text("Submit delivery", `dl:sub:${dealCode}`)
-    .text("Deal room", `dr:enter:${dealCode}`)
+    .text("Submit Delivery", `dl:sub:${dealCode}`)
+    .text("View Deal Room", `dr:enter:${dealCode}`)
     .row()
-    .text("View deal", `d:v:${dealCode}`);
+    .text("View Deal", `d:v:${dealCode}`);
 }
 
 export function buyerPaymentRequiredText(params: {
@@ -70,159 +59,150 @@ export function buyerPaymentRequiredText(params: {
   lockedFileCount?: number;
 }): string {
   const exp = params.expiresAt
-    ? escapeTelegramHtml(params.expiresAt.toISOString().slice(0, 16).replace("T", " ") + " UTC")
+    ? params.expiresAt.toISOString().slice(0, 16).replace("T", " ") + " UTC"
     : "—";
   const lockLine =
     params.lockedFileCount && params.lockedFileCount > 1
-      ? escapeTelegramHtml(
-          `${params.lockedFileCount} files in the Delivery Vault (names only until you pay).`,
-        )
+      ? `${params.lockedFileCount} files in the Delivery Vault (names only until you pay).`
       : params.lockedFileName
-        ? `Delivery vault: ${escapeTelegramHtml(params.lockedFileName)}`
-        : escapeTelegramHtml("Delivery is secured in the vault.");
-  const addr = escapeTelegramHtml(params.paymentAddress);
-  const dc = escapeTelegramHtml(params.dealCode);
-  const amt = escapeTelegramHtml(params.amount);
-  const cur = escapeTelegramHtml(params.currency);
-  const net = escapeTelegramHtml(params.network);
-
-  const intro = [
-    `<b>Deal Protection</b>`,
-    RULER_HTML,
-    "",
-    "<b>What</b> You are paying escrow to unlock the Delivery Vault.",
-    "<b>Safe</b> Funds are not released to the seller until Buyer Review + Release Request (or Case Review if needed).",
-    "<b>Next</b> Send only the correct coin and network to the address below.",
-  ].join("\n");
-
+        ? `Delivery Vault: ${params.lockedFileName}`
+        : "Delivery: secured in the Delivery Vault.";
   const core = [
-    `<b>Payment required</b>`,
-    RULER_HTML,
+    DIV,
+    "OGMP MM — Payment Required",
+    DIV,
     "",
-    `<b>Deal</b> ${dc}`,
-    "<b>Status</b> Deal Protection — Delivery Vault locked",
+    `Deal: ${params.dealCode}`,
+    "Status: Deal Protection — Delivery Vault locked",
     "",
-    "<b>What</b> Pay escrow to unlock the vault.",
-    "<b>Safe</b> Funds stay in escrow until Buyer Review + Release Request.",
-    "<b>Next</b> Copy the address, send the exact amount on the right network, then use <b>I have paid</b> / <b>Check payment</b>.",
+    "What: pay escrow to unlock the vault.",
+    "Safe: funds stay in escrow until Buyer Review + Release Request.",
+    "Next: copy the address, send exact amount on the right network, then I Have Paid / Check Payment.",
     "",
-    `<i>${escapeTelegramHtml(lockLine)}</i>`,
+    lockLine,
     "",
-    `<b>Amount</b> ${amt} ${cur}`,
-    `<b>Network</b> ${net}`,
+    `Amount: ${params.amount} ${params.currency}`,
+    `Network: ${params.network}`,
     "",
-    "<b>Address</b>",
-    `<code>${addr}</code>`,
+    "Address:",
+    params.paymentAddress,
     "",
-    `<b>Expires</b> ${exp}`,
+    `Expires: ${exp}`,
     "",
-    "<i>Send only the selected crypto on this network. Never pay outside OGMP MM.</i>",
-    trustFooterHtml(),
+    "Send only the selected crypto on this network. Never pay outside OGMP MM.",
+    "",
+    TRUST_OPS_FOOTER,
+    "",
+    COMMUNITY_TRUST_LINE,
   ].join("\n");
-
-  return `${intro}\n\n${core}`;
+  return `${DEAL_PROTECTION_BEFORE_PAY}\n\n${core}`;
 }
 
 export function buyerPaymentRequiredButtons(dealCode: string): { text: string; cb: string }[][] {
   return [
     [
-      { text: "I have paid", cb: `bx:pay:${dealCode}` },
-      { text: "Check payment", cb: `bx:cp:${dealCode}` },
+      { text: "I Have Paid", cb: `bx:pay:${dealCode}` },
+      { text: "Check Payment", cb: `bx:cp:${dealCode}` },
     ],
-    [{ text: "Copy address", cb: `bx:addr:${dealCode}` }],
+    [{ text: "Copy Address", cb: `bx:addr:${dealCode}` }],
     [
-      { text: "Deal room", cb: `dr:enter:${dealCode}` },
-      { text: "View deal", cb: `d:v:${dealCode}` },
+      { text: "View Deal Room", cb: `dr:enter:${dealCode}` },
+      { text: "View Deal", cb: `d:v:${dealCode}` },
     ],
-    [{ text: "Open case", cb: `d:rp:${dealCode}` }],
+    [{ text: "Open Case", cb: `d:rp:${dealCode}` }],
   ];
 }
 
 export function buyerUnlockedText(dealCode: string): string {
-  const dc = escapeTelegramHtml(dealCode);
   return [
-    `<b>Delivery vault</b> · <i>Unlocked</i>`,
-    RULER_HTML,
+    DIV,
+    "OGMP MM — Delivery Vault",
+    DIV,
     "",
-    `<b>Deal</b> ${dc}`,
-    "<b>Status</b> Delivery Vault unlocked",
+    `Deal: ${dealCode}`,
+    "Status: Delivery Vault unlocked",
     "",
-    "<b>What</b> Payment confirmed — the vault is open.",
-    "<b>Safe</b> Funds still sit in escrow until you finish Buyer Review.",
-    "<b>Next</b> Download, inspect, then <b>Confirm received</b> — or <b>Open case</b> if something is wrong.",
+    "What: payment confirmed — vault is opening.",
+    "Safe: funds still in escrow until you finish Buyer Review (confirm).",
+    "Next: download, inspect, then Confirm Received — or Open Case if something is wrong.",
     "",
-    "<i>Confirm only after you have fully checked the delivery.</i>",
-    trustFooterHtml(),
+    "Only confirm after you fully checked the delivery.",
+    "",
+    TRUST_OPS_FOOTER,
+    "",
+    COMMUNITY_TRUST_LINE,
   ].join("\n");
 }
 
 export function buyerUnlockedKeyboard(dealCode: string, showDownload: boolean): { text: string; cb: string }[][] {
   const row: { text: string; cb: string }[] = [];
-  if (showDownload) row.push({ text: "Download files", cb: `bx:dl:${dealCode}` });
-  row.push({ text: "Confirm received", cb: `d:rel:${dealCode}` });
+  if (showDownload) row.push({ text: "Download Files", cb: `bx:dl:${dealCode}` });
+  row.push({ text: "Confirm Received", cb: `d:rel:${dealCode}` });
   return [
     row,
     [
-      { text: "Open case", cb: `d:rp:${dealCode}` },
-      { text: "View deal", cb: `d:v:${dealCode}` },
+      { text: "Open Case", cb: `d:rp:${dealCode}` },
+      { text: "View Deal", cb: `d:v:${dealCode}` },
     ],
-    [{ text: "Deal room", cb: `dr:enter:${dealCode}` }],
+    [{ text: "View Deal Room", cb: `dr:enter:${dealCode}` }],
   ];
 }
 
 export function buyerReviewFollowupText(dealCode: string): string {
-  const dc = escapeTelegramHtml(dealCode);
   return [
-    `<b>Buyer review</b>`,
-    RULER_HTML,
+    DIV,
+    "OGMP MM — Buyer Review",
+    DIV,
     "",
-    `<b>Deal</b> ${dc}`,
+    `Deal: ${dealCode}`,
     "",
-    "<b>What</b> Check the unlocked vault contents.",
-    "<b>Safe</b> Escrow still holds funds until you confirm.",
-    "<b>Next</b> Confirm received, or open a case if there is a problem.",
+    "What: Buyer Review — check the unlocked vault contents.",
+    "Safe: escrow still holds funds until you confirm.",
+    "Next: Confirm Received, or Open Case if there is a problem.",
     "",
-    "<i>Confirm only after you have fully checked the delivery.</i>",
-    trustFooterHtml(),
+    "Only confirm after you fully checked the delivery.",
+    "",
+    TRUST_OPS_FOOTER,
+    "",
+    COMMUNITY_TRUST_LINE,
   ].join("\n");
 }
 
 export function buyerReviewKeyboard(dealCode: string): { text: string; cb: string }[][] {
   return [
     [
-      { text: "Confirm received", cb: `d:rel:${dealCode}` },
-      { text: "Open case", cb: `d:rp:${dealCode}` },
+      { text: "Confirm Received", cb: `d:rel:${dealCode}` },
+      { text: "Open Case", cb: `d:rp:${dealCode}` },
     ],
-    [{ text: "View deal", cb: `d:v:${dealCode}` }, { text: "Deal room", cb: `dr:enter:${dealCode}` }],
+    [{ text: "View Deal", cb: `d:v:${dealCode}` }, { text: "View Deal Room", cb: `dr:enter:${dealCode}` }],
   ];
 }
 
 export function buyerPaymentSecuredAwaitingDeliveryText(dealCode: string): string {
-  const dc = escapeTelegramHtml(dealCode);
   return [
-    `<b>Deal Protection</b> · <i>Payment secured</i>`,
-    RULER_HTML,
+    DIV,
+    "OGMP MM — Deal Protection",
+    DIV,
     "",
-    `<b>Deal</b> ${dc}`,
+    `Deal: ${dealCode}`,
     "",
-    "<b>What</b> Payment confirmed — waiting on Delivery Vault content.",
-    "<b>Safe</b> Your pay is in escrow.",
-    "<b>Next</b> The seller should upload and lock in Deal room; you will get files when the vault unlocks.",
+    "What: payment confirmed — waiting on Delivery Vault content.",
+    "Safe: your pay is in escrow.",
+    "Next: seller should upload/lock in Deal room; you’ll get files when the vault unlocks.",
   ].join("\n");
 }
 
 export function sellerFundsSecuredText(dealCode: string): string {
-  const dc = escapeTelegramHtml(dealCode);
   return [
-    `<b>Deal Protection</b> · <i>Buyer paid</i>`,
-    RULER_HTML,
+    DIV,
+    "OGMP MM — Deal Protection",
+    DIV,
     "",
-    `<b>Deal</b> ${dc}`,
+    `Deal: ${dealCode}`,
     "",
-    "<b>What</b> Buyer payment confirmed.",
-    "<b>Safe</b> Escrow holds funds until Buyer Review + Release Request.",
-    "<b>Next</b> The buyer can access the vault — wait for their confirmation.",
-    trustFooterHtml(),
+    "What: buyer payment confirmed.",
+    "Safe: escrow holds funds until Buyer Review + Release Request.",
+    "Next: buyer can access the Delivery Vault; wait for their confirm.",
   ].join("\n");
 }
 
@@ -252,7 +232,6 @@ export async function notifyBuyerPaymentRequired(dealId: string): Promise<void> 
   await enqueueDmWithButtons({
     chatId: deal.buyer.telegramId.toString(),
     text,
-    parseMode: MAIN_UI_PARSE_MODE,
     buttons: buyerPaymentRequiredButtons(deal.dealCode),
   });
 }
@@ -290,13 +269,11 @@ export async function onPaymentConfirmedDeliveryFlow(dealId: string): Promise<vo
   });
   if (!dealFresh) return;
   const ufs = userFacingDealStatus(dealFresh, { hasLockedDelivery: false, paymentStatus: pay?.status ?? null });
-  const ufsEsc = escapeTelegramHtml(ufs);
 
   if (dealFresh.seller) {
     await enqueueDealParticipantNotify({
       targetTelegramId: dealFresh.seller.telegramId,
       text: sellerFundsSecuredText(dealFresh.dealCode),
-      parseMode: MAIN_UI_PARSE_MODE,
     });
   }
 
@@ -306,8 +283,7 @@ export async function onPaymentConfirmedDeliveryFlow(dealId: string): Promise<vo
       const text = buyerUnlockedText(dealFresh.dealCode);
       await enqueueDmWithButtons({
         chatId: dealFresh.buyer.telegramId.toString(),
-        text: `${text}\n\n<b>Status</b> ${ufsEsc}`,
-        parseMode: MAIN_UI_PARSE_MODE,
+        text: `${text}\n\nStatus: ${ufs}`,
         buttons: buyerUnlockedKeyboard(dealFresh.dealCode, !auto),
       });
       if (auto) {
@@ -319,12 +295,11 @@ export async function onPaymentConfirmedDeliveryFlow(dealId: string): Promise<vo
     } else {
       await enqueueDmWithButtons({
         chatId: dealFresh.buyer.telegramId.toString(),
-        text: `${buyerPaymentSecuredAwaitingDeliveryText(dealFresh.dealCode)}\n\n<b>Status</b> ${ufsEsc}`,
-        parseMode: MAIN_UI_PARSE_MODE,
+        text: `${buyerPaymentSecuredAwaitingDeliveryText(dealFresh.dealCode)}\n\nStatus: ${ufs}`,
         buttons: [
           [
-            { text: "View deal", cb: `d:v:${dealFresh.dealCode}` },
-            { text: "Deal room", cb: `dr:enter:${dealFresh.dealCode}` },
+            { text: "View Deal", cb: `d:v:${dealFresh.dealCode}` },
+            { text: "Deal Room", cb: `dr:enter:${dealFresh.dealCode}` },
           ],
         ],
       });
@@ -348,35 +323,26 @@ export async function resubmitSellerDeliveryNotify(dealId: string): Promise<void
 
 export function paymentNotDetectedBuyerText(): string {
   return [
-    "<b>Payment</b> · <i>Not detected yet</i>",
-    RULER_HTML,
+    "What: payment not detected yet.",
+    "Safe: nothing is released; your wallet is unchanged by OGMP MM.",
+    "Next: double-check amount, network, and address — then Check Payment again.",
     "",
-    "<b>What</b> No matching payment seen yet.",
-    "<b>Safe</b> Nothing is released; your wallet is unchanged by OGMP MM.",
-    "<b>Next</b> Double-check amount, network, and address — then tap <b>Check payment</b> again.",
-    "",
-    "<i>Never pay outside the address this bot shows for your deal.</i>",
+    "Never pay outside OGMP MM.",
   ].join("\n");
 }
 
 export function paymentDetectedWaitingText(): string {
   return [
-    "<b>Payment</b> · <i>Confirming</i>",
-    RULER_HTML,
-    "",
-    "<b>What</b> Payment detected — waiting for confirmations.",
-    "<b>Safe</b> Deal Protection keeps funds in escrow until confirmed.",
-    "<b>Next</b> Wait a moment, then <b>Check payment</b> again — the vault unlocks automatically when ready.",
+    "What: payment detected — waiting for confirmations.",
+    "Safe: Deal Protection keeps funds in escrow until confirmed.",
+    "Next: wait a moment, then Check Payment again — Delivery Vault unlocks automatically.",
   ].join("\n");
 }
 
 export function paymentConfirmedUnlockingText(): string {
   return [
-    "<b>Payment</b> · <i>Confirmed</i>",
-    RULER_HTML,
-    "",
-    "<b>What</b> Payment confirmed — the Delivery Vault is unlocking.",
-    "<b>Safe</b> Escrow still applies until Buyer Review + Release Request.",
-    "<b>Next</b> Open your latest OGMP MM message or <b>View deal</b>.",
+    "What: payment confirmed — Delivery Vault is unlocking.",
+    "Safe: escrow still applies until Buyer Review + Release Request.",
+    "Next: open your latest OGMP MM message or View Deal.",
   ].join("\n");
 }

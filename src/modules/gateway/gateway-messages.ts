@@ -1,41 +1,43 @@
 import { InlineKeyboard } from "grammy";
-import { MAIN_UI_PARSE_MODE, RULER_HTML } from "../../bots/mainBot/trust-copy.js";
 
-export { MAIN_UI_PARSE_MODE };
+export const GATEWAY_DIV = "━━━━━━━━━━━━━━━━━━";
 
 export const GATEWAY_ACCESS_REQUIRED_LONG = [
-  `<b>OGMP MM</b> · <i>Gateway access</i>`,
-  RULER_HTML,
+  GATEWAY_DIV,
+  "OGMP MM — Access Required",
+  GATEWAY_DIV,
   "",
-  "To use this bot you first join the official <b>OGMP gateway</b>.",
+  "To use OGMP MM, you must first join our official OGMP gateway.",
   "",
-  "<b>Steps</b>",
-  "1. Tap <b>Join OGMP Gateway</b> below",
-  "2. Return here and tap <b>I joined — Continue</b>",
+  "This helps us keep the marketplace safer, cleaner, and verified for all users.",
   "",
-  "<i>This helps keep spam and bad actors out of the marketplace.</i>",
+  "Step 1: Join the OGMP Gateway",
+  "Step 2: Return here and tap “I Joined — Continue”",
 ].join("\n");
 
 export const GATEWAY_ACCESS_REQUIRED_SHORT = [
-  `<b>OGMP MM</b> · <i>Gateway required</i>`,
-  RULER_HTML,
+  GATEWAY_DIV,
+  "OGMP MM — Access Required",
+  GATEWAY_DIV,
   "",
-  "Join the OGMP Gateway, then come back and tap <b>Continue</b>.",
+  "Please join the OGMP Gateway before using the escrow bot.",
+  "",
+  "After joining, come back and tap continue.",
 ].join("\n");
 
 export const GATEWAY_ACCESS_APPROVED = [
-  `<b>Access approved</b>`,
-  RULER_HTML,
+  GATEWAY_DIV,
+  "OGMP MM — Access Approved",
+  GATEWAY_DIV,
   "",
-  "You can use OGMP MM now.",
+  "You now have access to OGMP MM.",
   "",
-  "<b>Next</b>",
-  "Send /start or use the menu to create or join a deal.",
+  "Welcome to secure middleman deals.",
 ].join("\n");
 
 export const GATEWAY_NOT_CONFIRMED =
-  "Not confirmed yet. Join the gateway, then tap <b>I joined — Continue</b> again.";
+  "Access not confirmed yet. Join the gateway, then tap “I Joined — Continue” again.";
 
 export function gatewayAccessKeyboard(joinUrl: string): InlineKeyboard {
-  return new InlineKeyboard().url("Join OGMP Gateway", joinUrl).row().text("I joined — Continue", "gw:continue");
+  return new InlineKeyboard().url("Join OGMP Gateway", joinUrl).row().text("I Joined — Continue", "gw:continue");
 }

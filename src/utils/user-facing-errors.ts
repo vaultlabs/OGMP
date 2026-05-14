@@ -2,7 +2,7 @@ import { AppError } from "./errors.js";
 
 /** Generic reply when an unexpected error is caught (no stack, paths, or secrets). */
 export const GENERIC_TRY_AGAIN =
-  "Something went wrong. Your deal is still safe. Please try again or contact support.";
+  "Something went wrong on our side. Please try again in a moment. If it keeps happening, open My deals or use /support with your deal code. Do not share passwords, seed phrases, or API keys in chat.";
 
 /**
  * Map caught errors to text safe to show in Telegram.
