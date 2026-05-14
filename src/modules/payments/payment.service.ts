@@ -13,7 +13,15 @@ export function isPrismaUniqueConstraintError(e: unknown): boolean {
 }
 
 function mapProviderStatus(
-  s: "pending" | "detecting" | "confirming" | "confirmed" | "underpaid" | "overpaid" | "expired",
+  s:
+    | "pending"
+    | "detecting"
+    | "confirming"
+    | "confirmed"
+    | "underpaid"
+    | "overpaid"
+    | "expired"
+    | "failed",
 ): PaymentRecordStatus {
   switch (s) {
     case "pending":
@@ -30,6 +38,8 @@ function mapProviderStatus(
       return "overpaid";
     case "expired":
       return "expired";
+    case "failed":
+      return "failed";
     default:
       return "pending";
   }
@@ -69,18 +79,21 @@ export async function applyPaymentSyncForDeal(dealId: string): Promise<void> {
     return;
   }
 
-  if (status.status === "expired") {
+  if (status.status === "expired" || status.status === "failed") {
     if (deal.status === "waiting_payment" || deal.status === "payment_detected") {
       assertValidDealTransition(deal.status, "cancelled");
       await prisma.deal.update({
         where: { id: deal.id, version: deal.version },
         data: { status: "cancelled", cancelledAt: new Date(), version: { increment: 1 } },
       });
-      await writeAuditLog({ eventType: "payment_expired", dealId });
+      await writeAuditLog({
+        eventType: status.status === "expired" ? "payment_expired" : "payment_failed",
+        dealId,
+      });
       await appendDealTimelineEvent({
         dealId,
         eventType: "deal_closed",
-        metadata: { reason: "payment_expired" },
+        metadata: { reason: status.status === "expired" ? "payment_expired" : "payment_failed" },
       });
     }
     return;

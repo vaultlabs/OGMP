@@ -5,11 +5,20 @@ export type PaymentAddressResult = {
   reference?: string;
   providerRef?: string;
   expiresAt?: Date;
-  requiredConfirmations: number;
+  /** When omitted, the deal flow uses `SupportedCoin.confirmationsRequired`. */
+  requiredConfirmations?: number;
 };
 
 export type PaymentStatusResult = {
-  status: "pending" | "detecting" | "confirming" | "confirmed" | "underpaid" | "overpaid" | "expired";
+  status:
+    | "pending"
+    | "detecting"
+    | "confirming"
+    | "confirmed"
+    | "underpaid"
+    | "overpaid"
+    | "expired"
+    | "failed";
   receivedAmount: string;
   txHash?: string;
   confirmations: number;

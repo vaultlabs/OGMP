@@ -20,6 +20,8 @@ const envSchema = z
     PAYMENT_PROVIDER: z.enum(["mock", "nowpayments"]).default("mock"),
     NOWPAYMENTS_API_KEY: z.string().optional(),
     NOWPAYMENTS_IPN_SECRET: z.string().optional(),
+    /** Override API host (default https://api.nowpayments.io). */
+    NOWPAYMENTS_API_BASE: z.string().url().optional(),
     PUBLIC_BASE_URL: z.string().url().optional(),
     AUTO_RELEASE_ENABLED: z.coerce.boolean().default(false),
     /** After escrow payment confirms, DM buyer each delivery file_id from the deal (if false, only a Download button). */
@@ -54,6 +56,29 @@ const envSchema = z
         message: "Set MAIN_BOT_TOKEN or TELEGRAM_BOT_TOKEN",
         path: ["MAIN_BOT_TOKEN"],
       });
+    }
+    if (data.PAYMENT_PROVIDER === "nowpayments") {
+      if (!data.NOWPAYMENTS_API_KEY?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "NOWPAYMENTS_API_KEY is required when PAYMENT_PROVIDER=nowpayments",
+          path: ["NOWPAYMENTS_API_KEY"],
+        });
+      }
+      if (!data.NOWPAYMENTS_IPN_SECRET?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "NOWPAYMENTS_IPN_SECRET is required when PAYMENT_PROVIDER=nowpayments",
+          path: ["NOWPAYMENTS_IPN_SECRET"],
+        });
+      }
+      if (!data.PUBLIC_BASE_URL?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "PUBLIC_BASE_URL is required when PAYMENT_PROVIDER=nowpayments (for ipn_callback_url)",
+          path: ["PUBLIC_BASE_URL"],
+        });
+      }
     }
   });
 
