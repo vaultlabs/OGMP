@@ -13,6 +13,17 @@ export async function runBuyerPaymentCheck(dealId: string, requesterTelegramId: 
   if (!deal?.buyer || deal.buyer.telegramId !== requesterTelegramId) {
     return "Only the buyer can check payment for this deal.";
   }
+  if (!deal.sellerId) {
+    return "This deal is missing a seller.";
+  }
+  if (deal.status === "waiting_payment" || deal.status === "payment_detected") {
+    const locked = await prisma.dealMessage.count({
+      where: { dealId, lockedForBuyer: true, senderId: deal.sellerId },
+    });
+    if (locked === 0) {
+      return "Payment is not open yet. The seller must upload and lock delivery in Deal room first. You will get a private message with the escrow address when that happens.";
+    }
+  }
   await applyPaymentSyncForDeal(dealId);
   const refreshed = await prisma.deal.findUnique({
     where: { id: dealId },

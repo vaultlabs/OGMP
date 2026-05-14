@@ -67,7 +67,7 @@ import {
 import { applyReview } from "../../services/reputation.service.js";
 import { reviewSchema } from "../../modules/deals/deal.validation.js";
 import type { CreateDealInput } from "../../modules/deals/deal.service.js";
-import { userFacingDealStatus } from "../../modules/deals/user-facing-status.js";
+import { userFacingDealStatus, userFacingDeliveryState } from "../../modules/deals/user-facing-status.js";
 import { escapeTelegramHtml } from "../../utils/telegram-html.js";
 import {
   createDealSuccessKeyboard,
@@ -104,8 +104,11 @@ function fmtUserLine(u: { telegramId: bigint; username: string | null; firstName
   return `${u.firstName ?? "User"} (${un}, id ${u.telegramId.toString()})`;
 }
 
-/** HTML for Telegram <code>parse_mode: "HTML"</code> — user/deal text is escaped; line breaks use newlines (no &lt;br&gt; tags). */
-async function fmtDealCard(dealId: string): Promise<string> {
+/**
+ * HTML for Telegram <code>parse_mode: "HTML"</code> — user/deal text is escaped; line breaks use newlines.
+ * @param viewerUserId Prisma user id of the reader (hides raw escrow address from buyer until seller locks delivery).
+ */
+async function fmtDealCard(dealId: string, viewerUserId: string | null = null): Promise<string> {
   const e = escapeTelegramHtml;
   const d = await prisma.deal.findUnique({
     where: { id: dealId },
@@ -114,8 +117,12 @@ async function fmtDealCard(dealId: string): Promise<string> {
   if (!d) return e("Deal not found.");
   const buyer = d.buyer ? fmtUserLine(d.buyer) : "(pending)";
   const seller = d.seller ? fmtUserLine(d.seller) : "(pending)";
-  const [lockedCount, msgCount, lastEv, pay] = await Promise.all([
-    prisma.dealMessage.count({ where: { dealId, lockedForBuyer: true } }),
+  const [sellerLockedCount, msgCount, lastEv, pay] = await Promise.all([
+    d.sellerId
+      ? prisma.dealMessage.count({
+          where: { dealId, lockedForBuyer: true, senderId: d.sellerId },
+        })
+      : Promise.resolve(0),
     prisma.dealMessage.count({ where: { dealId } }),
     prisma.dealTimelineEvent.findFirst({
       where: { dealId },
@@ -124,16 +131,17 @@ async function fmtDealCard(dealId: string): Promise<string> {
     prisma.payment.findFirst({ where: { dealId }, orderBy: { createdAt: "desc" } }),
   ]);
   const displayStatus = userFacingDealStatus(d, {
-    hasLockedDelivery: lockedCount > 0,
+    hasLockedDelivery: sellerLockedCount > 0,
     paymentStatus: pay?.status ?? null,
   });
-  const delivery =
-    d.status === "item_delivered" || d.status === "buyer_confirmed" || d.status === "release_requested"
-      ? "Buyer Reviewing / Release"
-      : d.status === "funded"
-        ? "Payment Confirmed"
-        : "—";
+  const delivery = userFacingDeliveryState(d.status, sellerLockedCount > 0);
   const termsPreview = `${d.dealTerms.slice(0, 300)}${d.dealTerms.length > 300 ? "…" : ""}`;
+  const hideEscrowFromBuyer =
+    !!viewerUserId &&
+    d.buyerId === viewerUserId &&
+    (d.status === "waiting_payment" || d.status === "payment_detected") &&
+    sellerLockedCount === 0;
+
   const lines: string[] = [
     "━━━━━━━━━━━━━━━━━━",
     "OGMP MM — Deal",
@@ -160,13 +168,21 @@ ${e(termsPreview)}`,
   ];
   if (lastEv) lines.push(`<b>Latest event</b>: ${e(lastEv.eventType)}`);
   if (d.paymentAddress && d.status !== "pending_acceptance") {
-    lines.push(
-      "",
-      `<b>Payment address</b>:
-<code>${e(d.paymentAddress)}</code>`,
-      `<b>Exact amount</b>: ${e(d.amount.toString())} ${e(d.currency)} on ${e(d.network)}`,
-      `<i>${e("Never send crypto outside the address shown by this bot. Wrong network can mean total loss.")}</i>`,
-    );
+    if (hideEscrowFromBuyer) {
+      lines.push(
+        "",
+        `<b>Escrow payment</b>: You will receive the exact payment address in a private message only after the seller locks delivery in Deal room.`,
+        `<i>${e("Never send funds to an address shared outside this bot.")}</i>`,
+      );
+    } else {
+      lines.push(
+        "",
+        `<b>Payment address</b>:`,
+        `<code>${e(d.paymentAddress)}</code>`,
+        `<b>Exact amount</b>: ${e(d.amount.toString())} ${e(d.currency)} on ${e(d.network)}`,
+        `<i>${e("Never send crypto outside the address shown by this bot. Wrong network can mean total loss.")}</i>`,
+      );
+    }
   }
   return lines.join("\n");
 }
@@ -232,7 +248,7 @@ export function createMainBot(): Bot<Context> {
       try {
         const deal = await joinDealByToken(user, joinTok);
         await ctx.reply(`Joined deal ${deal.dealCode}.`);
-        await ctx.reply(await fmtDealCard(deal.id), { parse_mode: "HTML" });
+        await ctx.reply(await fmtDealCard(deal.id, user.id), { parse_mode: "HTML" });
         await ctx.reply("Next: both sides accept terms.", {
           reply_markup: joinSuccessKeyboard(deal.dealCode),
         });
@@ -355,6 +371,43 @@ export function createMainBot(): Bot<Context> {
     await ctx.reply("Enter a short *deal title* (plain text).", { parse_mode: "Markdown" });
   });
 
+  bot.callbackQuery(/^w:party:skip$/, async (ctx) => {
+    if (!ctx.from) return;
+    const w = await getCreateWizard(BigInt(ctx.from.id));
+    if (!w || w.step !== "party_terms") {
+      await ctx.answerCallbackQuery({ text: "Wizard expired — /create", show_alert: true });
+      return;
+    }
+    await setCreateWizard(BigInt(ctx.from.id), {
+      step: "amount",
+      creatorRole: w.creatorRole,
+      title: w.title,
+      description: w.description,
+      partyTermsExtra: "",
+    });
+    await ctx.answerCallbackQuery();
+    await ctx.reply("Enter numeric deal amount (crypto units, e.g. `100.5`):", { parse_mode: "Markdown" });
+  });
+
+  bot.callbackQuery(/^w:party:custom$/, async (ctx) => {
+    if (!ctx.from) return;
+    const w = await getCreateWizard(BigInt(ctx.from.id));
+    if (!w || w.step !== "party_terms") {
+      await ctx.answerCallbackQuery({ text: "Wizard expired — /create", show_alert: true });
+      return;
+    }
+    await setCreateWizard(BigInt(ctx.from.id), {
+      step: "party_terms_text",
+      creatorRole: w.creatorRole,
+      title: w.title,
+      description: w.description,
+    });
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      "Send your additional terms in one message (minimum 10 characters). Examples: delivery deadline, warranty, refund conditions, or what each side guarantees.",
+    );
+  });
+
   bot.callbackQuery(/^m:deals$/, async (ctx) => {
     if (!ctx.from) return;
     const u = await findUserByTelegramId(BigInt(ctx.from.id));
@@ -395,14 +448,16 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     await ctx.answerCallbackQuery();
-    const text = await fmtDealCard(deal.id);
-    const lockedPre = await prisma.dealMessage.count({
-      where: { dealId: deal.id, lockedForBuyer: true },
-    });
+    const text = await fmtDealCard(deal.id, u.id);
+    const lockedPre = deal.sellerId
+      ? await prisma.dealMessage.count({
+          where: { dealId: deal.id, lockedForBuyer: true, senderId: deal.sellerId },
+        })
+      : 0;
     let hint = "";
     if (deal.status === "pending_acceptance") {
       hint =
-        "\n\nNext: both parties accept terms. The buyer will then receive the escrow payment address.";
+        "\n\nNext: both parties accept terms. The seller then uploads and locks delivery in Deal room; only then does the buyer receive the escrow payment address.";
     } else if (deal.status === "waiting_payment" || deal.status === "payment_detected") {
       if (deal.buyerId === u.id) {
         hint = lockedPre
@@ -430,7 +485,11 @@ export function createMainBot(): Bot<Context> {
     if (deal.status === "pending_acceptance") {
       kb.text("Accept terms", `d:a:${deal.dealCode}`).row();
     }
-    if (deal.buyerId === u.id && (deal.status === "waiting_payment" || deal.status === "payment_detected")) {
+    if (
+      deal.buyerId === u.id &&
+      lockedPre > 0 &&
+      (deal.status === "waiting_payment" || deal.status === "payment_detected")
+    ) {
       kb.text("I Have Paid", `bx:pay:${deal.dealCode}`).text("Check Payment", `bx:cp:${deal.dealCode}`).row();
     }
     if (deal.buyerId === u.id && deal.status === "item_delivered") {
@@ -650,7 +709,7 @@ export function createMainBot(): Bot<Context> {
     try {
       const updated = await acceptTerms(u.id, deal.id);
       await ctx.answerCallbackQuery({ text: "Accepted" });
-      await ctx.reply(await fmtDealCard(updated.id), { parse_mode: "HTML" });
+      await ctx.reply(await fmtDealCard(updated.id, u.id), { parse_mode: "HTML" });
       if (updated.status === "pending_acceptance") {
         await notifyCounterpartyAfterTermsAccept(updated.id, u.id);
       } else if (updated.status === "waiting_payment" && updated.paymentAddress) {
@@ -672,7 +731,7 @@ export function createMainBot(): Bot<Context> {
     try {
       const d = await markDelivered(u.id, deal.id);
       await ctx.answerCallbackQuery({ text: "Marked delivered" });
-      await ctx.reply(await fmtDealCard(d.id), { parse_mode: "HTML" });
+      await ctx.reply(await fmtDealCard(d.id, u.id), { parse_mode: "HTML" });
       const ns = nextStepForActorReply(d, u.id);
       if (ns) await ctx.reply(ns.text, { reply_markup: ns.kb });
     } catch (e) {
@@ -689,7 +748,7 @@ export function createMainBot(): Bot<Context> {
     try {
       const d = await buyerConfirmRelease(u.id, deal.id);
       await ctx.answerCallbackQuery({ text: "Processed" });
-      await ctx.reply(await fmtDealCard(d.id), { parse_mode: "HTML" });
+      await ctx.reply(await fmtDealCard(d.id, u.id), { parse_mode: "HTML" });
       const ns = nextStepForActorReply(d, u.id);
       if (ns) await ctx.reply(ns.text, { reply_markup: ns.kb });
     } catch (e) {
@@ -935,7 +994,7 @@ export function createMainBot(): Bot<Context> {
     try {
       const deal = await joinDealByToken(user, token);
       await ctx.reply(`Joined deal ${deal.dealCode}.`);
-      await ctx.reply(await fmtDealCard(deal.id), { parse_mode: "HTML" });
+      await ctx.reply(await fmtDealCard(deal.id, user.id), { parse_mode: "HTML" });
       await ctx.reply("Next: both sides accept terms.", {
         reply_markup: joinSuccessKeyboard(deal.dealCode),
       });
@@ -1094,6 +1153,7 @@ export function createMainBot(): Bot<Context> {
       amount: w.amount,
       currency: cur,
       network: net === "BTC" ? "BTC" : net,
+      partyTermsExtra: w.partyTermsExtra ?? "",
     });
     await ctx.answerCallbackQuery();
     await ctx.reply("Who pays the escrow fee?", {
@@ -1113,6 +1173,7 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     const draft = toCreateDealInput(w, fp);
+    const customTerms = !draft.dealTerms.includes("Party-agreed additions: none");
     await setCreateWizard(BigInt(ctx.from.id), { step: "confirm", draft });
     await ctx.answerCallbackQuery();
     await ctx.reply(
@@ -1122,6 +1183,7 @@ export function createMainBot(): Bot<Context> {
         `Title: ${draft.title}`,
         `Amount: ${draft.amount} ${draft.currency} (${draft.network})`,
         `Fee payer: ${draft.feePayer}`,
+        `Written party terms / guarantees: ${customTerms ? "Yes (see Terms on the deal card)" : "No — standard escrow wording only"}`,
       ].join("\n"),
       {
         parse_mode: "Markdown",
@@ -1148,7 +1210,7 @@ export function createMainBot(): Bot<Context> {
       const link = me ? `https://t.me/${me}?start=join_${deal.inviteToken}` : `Invite token:\n${deal.inviteToken}`;
       await ctx.reply(`Deal ${deal.dealCode} is ready.\nSend this invite to your counterparty:`);
       await ctx.reply(link);
-      await ctx.reply(await fmtDealCard(deal.id), { parse_mode: "HTML" });
+      await ctx.reply(await fmtDealCard(deal.id, u.id), { parse_mode: "HTML" });
       await ctx.reply("Next: they join, then both sides accept terms.", {
         reply_markup: createDealSuccessKeyboard(deal.dealCode),
       });
@@ -1233,10 +1295,33 @@ export function createMainBot(): Bot<Context> {
     }
     if (w.step === "description") {
       await setCreateWizard(BigInt(ctx.from.id), {
-        step: "amount",
+        step: "party_terms",
         creatorRole: w.creatorRole,
         title: w.title,
         description: text.slice(0, 4000),
+      });
+      await ctx.reply(
+        "Optional: add written guarantees, warranties, deadlines, or other conditions both sides should agree to (recommended for high-value trades).",
+        {
+          reply_markup: new InlineKeyboard()
+            .text("Skip — summary only", "w:party:skip")
+            .row()
+            .text("Add custom terms…", "w:party:custom"),
+        },
+      );
+      return;
+    }
+    if (w.step === "party_terms_text") {
+      if (text.length < 10) {
+        await ctx.reply("Too short — at least 10 characters, or send /create to restart.");
+        return;
+      }
+      await setCreateWizard(BigInt(ctx.from.id), {
+        step: "amount",
+        creatorRole: w.creatorRole,
+        title: w.title,
+        description: w.description,
+        partyTermsExtra: text.slice(0, 4000),
       });
       await ctx.reply("Enter numeric deal amount (crypto units, e.g. `100.5`):", { parse_mode: "Markdown" });
       return;
@@ -1252,6 +1337,7 @@ export function createMainBot(): Bot<Context> {
         title: w.title,
         description: w.description,
         amount: text,
+        partyTermsExtra: w.partyTermsExtra ?? "",
       });
       await ctx.reply("Choose network:", {
         reply_markup: new InlineKeyboard()

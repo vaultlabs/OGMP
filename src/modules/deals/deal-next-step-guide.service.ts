@@ -29,7 +29,8 @@ export function nextStepForActorReply(
         return { text, kb };
       }
       if (isBuyer) {
-        const text = "Next: wait for the seller to lock delivery, then pay from the deal card.";
+        const text =
+          "Next: wait for the seller to lock delivery in Deal room. You will receive a private message with the escrow address when you can pay — then open View deal.";
         kb.text("View deal", `d:v:${code}`).row().text("Check payment", `bx:cp:${code}`);
         return { text, kb };
       }

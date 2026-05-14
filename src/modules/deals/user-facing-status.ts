@@ -13,12 +13,12 @@ export function userFacingDealStatus(
     case "pending_acceptance":
       return "Accept Terms";
     case "waiting_payment":
-      if (locked) return "Delivery Locked";
-      return "Waiting for Buyer Payment";
+      if (locked) return "Delivery Locked — Awaiting Payment";
+      return "Awaiting Seller Locked Delivery";
     case "payment_detected":
-      if (locked) return "Delivery Locked";
-      if (ps === "confirming" || ps === "detecting") return "Waiting for Buyer Payment";
-      return "Waiting for Buyer Payment";
+      if (locked) return "Delivery Locked — Awaiting Payment";
+      if (ps === "confirming" || ps === "detecting") return "Payment Detected";
+      return "Awaiting Seller Locked Delivery";
     case "funded":
       return "Payment Confirmed";
     case "item_delivered":
