@@ -17,20 +17,22 @@ export function nextStepForActorReply(
 
   switch (deal.status) {
     case "pending_acceptance": {
-      const text = "Next: accept your deal terms (or wait for your counterparty to join).";
+      const text =
+        "What: deal is waiting on terms.\nSafe: nothing moves until both accept.\nNext: Accept terms (or wait for them).";
       kb.text("Accept terms", `d:a:${code}`).text("View deal", `d:v:${code}`);
       return { text, kb };
     }
     case "waiting_payment":
     case "payment_detected": {
       if (isSeller) {
-        const text = "Next: open Deal room and upload delivery. The buyer pays after files are locked.";
+        const text =
+          "What: Deal Protection is on — buyer pays after the Delivery Vault locks.\nSafe: your file stays locked until then.\nNext: Deal room → upload → lock.";
         kb.text("Upload / Deal room", `dr:enter:${code}`).text("View deal", `d:v:${code}`);
         return { text, kb };
       }
       if (isBuyer) {
         const text =
-          "Next: wait for the seller to lock delivery in Deal room. You will receive a private message with the escrow address when you can pay — then open View deal.";
+          "What: waiting on Delivery Vault lock.\nSafe: no pay address until vault is ready.\nNext: watch for Payment Required DM, then pay in-bot only.";
         kb.text("View deal", `d:v:${code}`).row().text("Check payment", `bx:cp:${code}`);
         return { text, kb };
       }
@@ -38,13 +40,15 @@ export function nextStepForActorReply(
     }
     case "funded": {
       if (isSeller) {
-        const text = "Next: if the buyer is not in review yet, tap Mark delivered; otherwise wait for confirmation.";
+        const text =
+          "What: vault unlocked — buyer can review.\nSafe: escrow still holds funds.\nNext: Mark delivered if needed, or wait for Buyer Review.";
         kb.text("Mark delivered", `d:del:${code}`).text("View deal", `d:v:${code}`).row();
         kb.text("Upload / Deal room", `dr:enter:${code}`);
         return { text, kb };
       }
       if (isBuyer) {
-        const text = "Next: open the deal or check your recent messages for delivery files.";
+        const text =
+          "What: Delivery Vault unlocked.\nSafe: payment still in escrow until you confirm.\nNext: Download → Buyer Review → Confirm.";
         kb.text("View deal", `d:v:${code}`).text("Download files", `bx:dl:${code}`);
         return { text, kb };
       }
@@ -52,13 +56,15 @@ export function nextStepForActorReply(
     }
     case "item_delivered": {
       if (isBuyer) {
-        const text = "Next: review the delivery, then confirm release or open a dispute if something is wrong.";
-        kb.text("Confirm received", `d:rel:${code}`).text("View deal", `d:v:${code}`).row();
-        kb.text("Download files", `bx:dl:${code}`).text("Open dispute", `d:dp:${code}`);
+        const text =
+          "What: Buyer Review.\nSafe: escrow until you confirm.\nNext: Confirm Received — or Open Case for Case Review.";
+        kb.text("Confirm received", `d:rel:${code}`).text("Open Case", `d:rp:${code}`).row();
+        kb.text("Download files", `bx:dl:${code}`).text("Hold deal", `d:dp:${code}`);
         return { text, kb };
       }
       if (isSeller) {
-        const text = "Next: wait for the buyer to confirm. You’ll get a message when they act.";
+        const text =
+          "What: Buyer Review in progress.\nSafe: funds still in escrow.\nNext: wait for confirm or Case Review.";
         kb.text("View deal", `d:v:${code}`);
         return { text, kb };
       }
@@ -66,12 +72,14 @@ export function nextStepForActorReply(
     }
     case "release_requested": {
       if (isSeller) {
-        const text = "Next: release is waiting on admin. You’ll be notified when it completes.";
+        const text =
+          "What: Release Request with admin.\nSafe: rules still apply — watch for the result.\nNext: wait for completion notice.";
         kb.text("View deal", `d:v:${code}`);
         return { text, kb };
       }
       if (isBuyer) {
-        const text = "Next: admin is reviewing release. No action needed unless support contacts you.";
+        const text =
+          "What: Release Request pending.\nSafe: escrow until admin completes.\nNext: no action unless support asks.";
         kb.text("View deal", `d:v:${code}`);
         return { text, kb };
       }
@@ -125,17 +133,17 @@ export async function notifyCounterpartyAfterTermsAccept(
 
   await enqueueDmWithButtons({
     chatId: other.user.telegramId.toString(),
-    text: [
-      DIV,
-      "OGMP MM — Your turn",
-      DIV,
-      "",
-      `Deal: ${deal.dealCode}`,
-      "",
-      `The ${side.toLowerCase()} accepted the deal terms.`,
-      "",
-      "Open the deal and accept terms to continue.",
-    ].join("\n"),
+      text: [
+        DIV,
+        "OGMP MM — Your turn",
+        DIV,
+        "",
+        `Deal: ${deal.dealCode}`,
+        "",
+        `What: ${side} accepted terms.`,
+        "Safe: deal stays paused until you accept too.",
+        "Next: Accept terms.",
+      ].join("\n"),
     buttons: [
       [
         { text: "View deal", cb: `d:v:${deal.dealCode}` },
@@ -163,7 +171,9 @@ export async function notifyBothAfterPaymentLive(dealId: string): Promise<void> 
         "",
         `Deal: ${deal.dealCode}`,
         "",
-        "Next: upload your delivery in Deal room first. The buyer pays after your files are locked.",
+        "What: Deal Protection is active.",
+        "Safe: buyer pays only after Delivery Vault locks.",
+        "Next: Deal room → upload delivery.",
       ].join("\n"),
       buttons: [
         [
@@ -184,7 +194,9 @@ export async function notifyBothAfterPaymentLive(dealId: string): Promise<void> 
         "",
         `Deal: ${deal.dealCode}`,
         "",
-        "Next: wait for the seller to upload and lock delivery. You’ll get a payment notice with the escrow address when it’s time to pay.",
+        "What: waiting on Delivery Vault.",
+        "Safe: you are not asked to pay until the vault locks.",
+        "Next: wait for Payment Required DM.",
       ].join("\n"),
       buttons: [[{ text: "View deal", cb: `d:v:${deal.dealCode}` }]],
     });

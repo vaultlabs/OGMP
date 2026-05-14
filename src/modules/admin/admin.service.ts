@@ -7,6 +7,7 @@ import { ForbiddenError, NotFoundError, StateMachineError } from "../../utils/er
 import { getPaymentProvider } from "../../payments/index.js";
 import { isAdminTelegramId } from "../../config/index.js";
 import { applyDealReleasedStats } from "../../services/reputation.service.js";
+import { onDealReleasedSideEffects } from "../../services/deal-completion-notify.service.js";
 import { appendDealTimelineEvent } from "../dealTimeline/timeline.service.js";
 
 function assertAdmin(telegramId: bigint): void {
@@ -87,6 +88,7 @@ export async function adminForceRelease(dealId: string, adminTelegramId: bigint)
   });
   const released = await prisma.deal.findUniqueOrThrow({ where: { id: dealId } });
   await applyDealReleasedStats(released);
+  await onDealReleasedSideEffects(dealId);
 }
 
 export async function adminForceRefund(dealId: string, adminTelegramId: bigint): Promise<void> {

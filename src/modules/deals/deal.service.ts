@@ -6,6 +6,7 @@ import { allocateDealCode } from "../../services/deal-code.service.js";
 import { computeFeeBreakdown, getActiveFeeSettings } from "../../services/fee.service.js";
 import { assertValidDealTransition } from "../../services/escrow-state-machine.js";
 import { applyDealDisputedStats, applyDealReleasedStats } from "../../services/reputation.service.js";
+import { onDealReleasedSideEffects } from "../../services/deal-completion-notify.service.js";
 import { writeAuditLog } from "../../services/audit.service.js";
 import { appendDealTimelineEvent } from "../dealTimeline/timeline.service.js";
 import { enqueueDealParticipantNotify } from "../notifications/notificationQueue.service.js";
@@ -366,6 +367,7 @@ export async function buyerConfirmRelease(buyerId: string, dealId: string): Prom
     });
     const released = await prisma.deal.findUniqueOrThrow({ where: { id: dealId } });
     await applyDealReleasedStats(released);
+    await onDealReleasedSideEffects(dealId);
     if (deal.sellerId) {
       const su = await prisma.user.findUnique({ where: { id: deal.sellerId } });
       if (su) {
@@ -453,7 +455,7 @@ export async function openDispute(openerId: string, dealId: string): Promise<voi
     if (u) {
       await enqueueDealParticipantNotify({
         targetTelegramId: u.telegramId,
-        text: `⚖ A dispute was opened on deal ${deal.dealCode}.`,
+        text: `⚖ A case was opened for admin review on deal ${deal.dealCode}.`,
       });
     }
   }

@@ -9,7 +9,6 @@ import { findUserByTelegramId } from "../../modules/users/user.service.js";
 import { prisma } from "../../db/prisma.js";
 import type { DealMessageType } from "@prisma/client";
 import {
-  TELEGRAM_FOLDER_UPLOAD_EXPLANATION_PLAIN,
   formatUploadContinuationPlain,
 } from "../../utils/upload-guidance.js";
 import { assertFileAllowed } from "../../utils/file-safety.js";
@@ -18,6 +17,7 @@ import {
   sellerFileSecuredKeyboard,
   sellerFileSecuredText,
 } from "../../services/delivery.service.js";
+import { formatDealRoomEntryPlain } from "./deal-room-welcome.js";
 
 async function resolveDealIdFromCode(code: string): Promise<string | null> {
   const d = await prisma.deal.findUnique({ where: { dealCode: code } });
@@ -47,21 +47,8 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
     }
     await setActiveDealRoom(BigInt(ctx.from.id), dealId);
     await ctx.answerCallbackQuery({ text: "Deal room active" });
-    await ctx.reply(
-      [
-        "━━━━━━━━━━━━━━━━━━",
-        "OGMP MM — Deal Room",
-        "━━━━━━━━━━━━━━━━━━",
-        "",
-        `Deal: ${deal.dealCode}`,
-        "",
-        "Send a message or upload a file. Telegram sends .txt as a document.",
-        "",
-        TELEGRAM_FOLDER_UPLOAD_EXPLANATION_PLAIN,
-        "",
-        "Use /done_room when you are finished.",
-      ].join("\n"),
-    );
+    const banner = await formatDealRoomEntryPlain(dealId);
+    await ctx.reply(banner);
   });
 
   bot.command("done_room", async (ctx) => {

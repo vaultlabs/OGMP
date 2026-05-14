@@ -16,8 +16,8 @@ function buildAdminReportActionKeyboard(rep: { id: string }, dealCode: string): 
   const mainUser = cfg.BOT_PUBLIC_USERNAME?.trim().replace(/^@/, "");
   const kb = new InlineKeyboard();
   if (reportTok) {
-    kb.text("View report", `rpa:v:${rep.id}`)
-      .text("View evidence", `rpa:ev:${rep.id}`)
+    kb.text("Case detail", `rpa:v:${rep.id}`)
+      .text("Evidence digest", `rpa:ev:${rep.id}`)
       .row();
     if (mainUser) {
       kb.url("Open main bot", `https://t.me/${mainUser}`);
@@ -43,8 +43,8 @@ export async function notifyAdminsReportSubmitted(reportId: string): Promise<voi
     `${rep.description.slice(0, 400)}${rep.description.length > 400 ? "…" : ""}`,
   );
   const text = [
-    "🚨 *New report submitted*",
-    `Report: \`${rep.reportCode}\` · id \`${rep.id}\``,
+    "🚨 *New Case Review*",
+    `Case: \`${rep.reportCode}\` · id \`${rep.id}\``,
     `Deal: \`${rep.deal.dealCode}\` · status \`${rep.deal.status}\``,
     `Reporter TG: \`${rep.reporter.telegramId}\` @${escapeTelegramMarkdownLegacy(rep.reporter.username ?? "n/a")}`,
     `Role: ${rep.reporterRole}`,
@@ -70,8 +70,8 @@ export async function notifyAdminsReportMoreEvidence(reportId: string): Promise<
   const api = new Api(getReportBotToken() ?? getMainBotToken());
   const kb = buildAdminReportActionKeyboard(rep, rep.deal.dealCode);
   const text = [
-    "📎 *Additional report evidence uploaded*",
-    `Report: \`${rep.reportCode}\` · id \`${rep.id}\``,
+    "📎 *Case Review — new evidence*",
+    `Case: \`${rep.reportCode}\` · id \`${rep.id}\``,
     `Deal: \`${rep.deal.dealCode}\` · status \`${rep.deal.status}\``,
     `Evidence files in DB: ${rep.evidence.length}`,
     "_Metadata only in “View evidence” — do not open unknown executables._",

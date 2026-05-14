@@ -35,6 +35,18 @@ export async function applyDealDisputedStats(deal: Deal): Promise<void> {
   ]);
 }
 
+export async function appendReviewOptionalText(params: {
+  dealId: string;
+  fromUserId: string;
+  text: string;
+}): Promise<boolean> {
+  const r = await prisma.review.updateMany({
+    where: { dealId: params.dealId, fromUserId: params.fromUserId },
+    data: { text: params.text.slice(0, 2000) },
+  });
+  return r.count > 0;
+}
+
 export async function applyReview(params: {
   dealId: string;
   fromUserId: string;

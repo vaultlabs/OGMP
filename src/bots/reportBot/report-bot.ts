@@ -1,5 +1,5 @@
 import { Bot, Context, InlineKeyboard } from "grammy";
-import { getReportBotToken, isAdminTelegramId } from "../../config/index.js";
+import { getReportBotToken, isAdminTelegramId, loadConfig } from "../../config/index.js";
 import { prisma } from "../../db/prisma.js";
 import { logger } from "../../utils/logger.js";
 import { getRedis } from "../../utils/redis.js";
@@ -26,6 +26,7 @@ import type { ParticipantRole, ReportCategory } from "@prisma/client";
 import { adminForceRefund, adminForceRelease } from "../../modules/admin/admin.service.js";
 import { buildAdminEvidenceDigest } from "../../modules/reports/evidence-view.service.js";
 import { enqueueAdminReportMoreEvidence, enqueueDealParticipantNotify } from "../../modules/notifications/notificationQueue.service.js";
+import { REPORT_BOT_HOME_PAGE } from "../mainBot/trust-copy.js";
 
 const WIZ = (id: bigint) => `ogmp:report_wiz:${id.toString()}`;
 
@@ -62,16 +63,16 @@ function commandArgs(text: string): string[] {
 
 function reportAdminDetailKb(reportId: string): InlineKeyboard {
   return new InlineKeyboard()
-    .text("View evidence", `rpa:ev:${reportId}`)
-    .text("Mark under review", `rpa:under:${reportId}`)
+    .text("Evidence digest", `rpa:ev:${reportId}`)
+    .text("Admin review", `rpa:under:${reportId}`)
     .row()
-    .text("Request proof", `rpa:more:${reportId}`)
-    .text("Close report", `rpa:cl:${reportId}`)
+    .text("Request evidence", `rpa:more:${reportId}`)
+    .text("Close case", `rpa:cl:${reportId}`)
     .row()
     .text("Release", `rpa:rel:${reportId}`)
     .text("Refund", `rpa:ref:${reportId}`)
     .row()
-    .text("Note", `rpa:note:${reportId}`);
+    .text("Admin note", `rpa:note:${reportId}`);
 }
 
 async function sendActiveReportList(ctx: Context): Promise<void> {
@@ -82,7 +83,7 @@ async function sendActiveReportList(ctx: Context): Promise<void> {
   });
   const kb = new InlineKeyboard();
   for (const r of reps) kb.text(r.reportCode, `rpa:v:${r.id}`).row();
-  await ctx.reply(reps.length ? "Active reports:" : "No active reports.", { reply_markup: kb });
+  await ctx.reply(reps.length ? "Open cases:" : "No open cases.", { reply_markup: kb });
 }
 
 export function createReportBot(): Bot<Context> {
@@ -100,9 +101,16 @@ export function createReportBot(): Bot<Context> {
     if (!ctx.from) return;
     const arg = startArg(ctx);
     if (!arg?.startsWith("report_")) {
-      await ctx.reply("This is **OGMP MM REPORT**. Open a report link from your escrow deal in the main OGMP MM bot.", {
-        parse_mode: "Markdown",
-      });
+      const cfg = loadConfig();
+      const kb = new InlineKeyboard();
+      const main = cfg.BOT_PUBLIC_USERNAME?.trim().replace(/^@+/, "");
+      if (main) kb.url("Start Case", `https://t.me/${main}`);
+      else kb.text("Start Case", "r:hint:main");
+      kb.row().text("Add Evidence", "r:hint:evidence").row();
+      const sup = cfg.SUPPORT_USERNAME?.trim().replace(/^@+/, "");
+      if (sup) kb.url("Contact Support", `https://t.me/${sup}`);
+      else kb.text("Contact Support", "r:hint:sup");
+      await ctx.reply(REPORT_BOT_HOME_PAGE, { reply_markup: kb });
       return;
     }
     const raw = arg.slice("report_".length);
@@ -158,6 +166,27 @@ export function createReportBot(): Bot<Context> {
     } catch (e) {
       await ctx.reply(`❌ ${String((e as Error).message)}`);
     }
+  });
+
+  bot.callbackQuery(/^r:hint:main$/, async (ctx) => {
+    await ctx.answerCallbackQuery({
+      text: "Open the main OGMP MM bot and use Report from your deal. Set BOT_PUBLIC_USERNAME on the server for a quick link button.",
+      show_alert: true,
+    });
+  });
+
+  bot.callbackQuery(/^r:hint:evidence$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      "Add evidence when this bot asks during an open case. Clear screenshots and files help admins complete case review faster.",
+    );
+  });
+
+  bot.callbackQuery(/^r:hint:sup$/, async (ctx) => {
+    await ctx.answerCallbackQuery({
+      text: "Set SUPPORT_USERNAME in server config for a Contact Support link, or reach staff through your OGMP community.",
+      show_alert: true,
+    });
   });
 
   bot.callbackQuery(/^rp:role:(buyer|seller)$/, async (ctx) => {

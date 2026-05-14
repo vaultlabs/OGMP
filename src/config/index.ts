@@ -76,6 +76,11 @@ function parseAdminIds(raw: string): bigint[] {
 
 let cached: AppConfig | null = null;
 
+/** Vitest / scripts only — clears parsed env cache so `process.env` changes apply. */
+export function resetConfigCacheForTests(): void {
+  cached = null;
+}
+
 export function loadConfig(): AppConfig {
   if (cached) return cached;
   const parsed = envSchema.safeParse(process.env);

@@ -126,6 +126,8 @@ model User {
   totalVolumeUsd   Decimal   @default(0) @map("total_volume_usd") @db.Decimal(36, 18)
   reputationScore  Decimal   @default(0) @map("reputation_score") @db.Decimal(5, 2)
   suspiciousFlags  Json      @default("[]") @map("suspicious_flags")
+  /** Optional admin-assigned trust label (e.g. OGMP Verified). */
+  profileBadge     String?   @map("profile_badge") @db.VarChar(64)
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
@@ -207,11 +209,23 @@ model Deal {
   reports          Report[]
   reportSessions   ReportSession[]
   activeReport     Report?     @relation("ActiveReport", fields: [activeReportId], references: [id])
+  dealReceipt      DealReceipt?
 
   @@index([status])
   @@index([creatorId])
   @@index([frozen])
   @@map("deals")
+}
+
+model DealReceipt {
+  id        String   @id @default(uuid()) @db.Uuid
+  dealId    String   @unique @map("deal_id") @db.Uuid
+  payload   Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  deal Deal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  @@map("deal_receipts")
 }
 
 model DealParticipant {

@@ -1,36 +1,40 @@
 import type { Deal, DealStatus, PaymentRecordStatus } from "@prisma/client";
 
-/** Simple labels for deal card and notifications (internal Prisma statuses stay strict). */
+/**
+ * Short premium labels for cards and DMs.
+ * Each maps to a moment in the flow: Deal Protection, Delivery Vault, Buyer Review, Release Request, Case Review.
+ */
 export function userFacingDealStatus(
   deal: Pick<Deal, "status" | "frozen">,
   opts?: { hasLockedDelivery: boolean; paymentStatus?: PaymentRecordStatus | null },
 ): string {
-  if (deal.frozen) return "Under Review";
+  if (deal.frozen) return "Case Review";
   const ps = opts?.paymentStatus;
   const locked = opts?.hasLockedDelivery ?? false;
 
   switch (deal.status) {
     case "pending_acceptance":
-      return "Accept Terms";
+      return "Accept terms";
     case "waiting_payment":
-      if (locked) return "Delivery Locked — Awaiting Payment";
-      return "Awaiting Seller Locked Delivery";
+      if (locked) return "Deal Protection — Delivery Vault locked";
+      return "Seller — add to Delivery Vault";
     case "payment_detected":
-      if (locked) return "Delivery Locked — Awaiting Payment";
-      if (ps === "confirming" || ps === "detecting") return "Payment Detected";
-      return "Awaiting Seller Locked Delivery";
+      if (locked) {
+        if (ps === "confirming" || ps === "detecting") return "Deal Protection — payment confirming";
+        return "Deal Protection — Delivery Vault locked";
+      }
+      return "Seller — add to Delivery Vault";
     case "funded":
-      return "Payment Confirmed";
+      return "Delivery Vault unlocked";
     case "item_delivered":
-      return "Buyer Reviewing";
+      return "Buyer Review";
     case "buyer_confirmed":
-      return "Release Requested";
     case "release_requested":
-      return "Release Requested";
+      return "Release Request";
     case "released":
-      return "Released";
+      return "Completed";
     case "disputed":
-      return "Under Review";
+      return "Case Review";
     case "cancelled":
       return "Cancelled";
     case "refunded":
@@ -42,9 +46,9 @@ export function userFacingDealStatus(
 
 export function userFacingDeliveryState(status: DealStatus, hasLockedDelivery: boolean): string {
   if (status === "waiting_payment" || status === "payment_detected") {
-    return hasLockedDelivery ? "Delivery Locked" : "Waiting for Seller Delivery";
+    return hasLockedDelivery ? "Delivery Vault (locked)" : "Delivery Vault (awaiting upload)";
   }
-  if (status === "funded") return "Delivery Unlocked";
-  if (status === "item_delivered") return "Buyer Reviewing";
+  if (status === "funded") return "Delivery Vault (unlocked)";
+  if (status === "item_delivered") return "Buyer Review";
   return "—";
 }

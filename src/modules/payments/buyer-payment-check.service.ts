@@ -1,6 +1,7 @@
 import { prisma } from "../../db/prisma.js";
 import { applyPaymentSyncForDeal } from "./payment.service.js";
 import {
+  paymentConfirmedUnlockingText,
   paymentDetectedWaitingText,
   paymentNotDetectedBuyerText,
 } from "../../services/delivery.service.js";
@@ -21,7 +22,7 @@ export async function runBuyerPaymentCheck(dealId: string, requesterTelegramId: 
       where: { dealId, lockedForBuyer: true, senderId: deal.sellerId },
     });
     if (locked === 0) {
-      return "Payment is not open yet. The seller must upload and lock delivery in Deal room first. You will get a private message with the escrow address when that happens.";
+      return "What: payment not open yet.\nSafe: nothing leaves escrow.\nNext: seller locks the Delivery Vault first — you’ll get a Payment Required DM.";
     }
   }
   await applyPaymentSyncForDeal(dealId);
@@ -33,7 +34,7 @@ export async function runBuyerPaymentCheck(dealId: string, requesterTelegramId: 
   if (!refreshed || !pay) return "No payment record for this deal.";
 
   if (refreshed.status === "funded" || refreshed.status === "item_delivered") {
-    return "Payment confirmed. Your delivery is unlocked — open the latest OGMP MM message or tap View Deal.";
+    return paymentConfirmedUnlockingText();
   }
   if (pay.status === "confirming" || pay.status === "detecting") {
     return paymentDetectedWaitingText();

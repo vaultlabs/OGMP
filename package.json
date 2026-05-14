@@ -19,6 +19,8 @@
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "test": "vitest run",
     "test:watch": "vitest",
+    "verify": "prisma generate && npm run build && npm run test",
+    "smoke:backend": "tsx scripts/smoke-backend.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",

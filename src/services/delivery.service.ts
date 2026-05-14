@@ -12,24 +12,29 @@ import {
   enqueueDealParticipantNotify,
 } from "../modules/notifications/notificationQueue.service.js";
 import { userFacingDealStatus } from "../modules/deals/user-facing-status.js";
+import { COMMUNITY_TRUST_LINE, DEAL_PROTECTION_BEFORE_PAY, TRUST_OPS_FOOTER } from "../bots/mainBot/trust-copy.js";
 
 const DIV = "━━━━━━━━━━━━━━━━━━";
 
 export function sellerFileSecuredText(dealCode: string, fileName: string): string {
   return [
     DIV,
-    "OGMP MM — File Secured",
+    "OGMP MM — Delivery Vault",
     DIV,
     "",
     `Deal: ${dealCode}`,
     "",
-    "Your delivery file has been uploaded and locked.",
-    "",
-    "The buyer has been notified to complete payment.",
-    "",
-    "Once payment is confirmed, the file will unlock automatically.",
+    "What: your file is locked in the Delivery Vault.",
+    "Safe: buyer cannot download until Deal Protection (payment) completes.",
+    "Next: wait for buyer pay, or add another file then Submit Delivery.",
     "",
     `File: ${fileName}`,
+    "",
+    "Only upload files for this deal.",
+    "",
+    TRUST_OPS_FOOTER,
+    "",
+    COMMUNITY_TRUST_LINE,
   ].join("\n");
 }
 
@@ -38,9 +43,9 @@ export function sellerFileSecuredKeyboard(dealCode: string): InlineKeyboard {
     .text("Upload Another File", `dr:enter:${dealCode}`)
     .row()
     .text("Submit Delivery", `dl:sub:${dealCode}`)
-    .text("View Deal", `d:v:${dealCode}`)
+    .text("View Deal Room", `dr:enter:${dealCode}`)
     .row()
-    .text("Deal Room", `dr:enter:${dealCode}`);
+    .text("View Deal", `d:v:${dealCode}`);
 }
 
 export function buyerPaymentRequiredText(params: {
@@ -58,35 +63,39 @@ export function buyerPaymentRequiredText(params: {
     : "—";
   const lockLine =
     params.lockedFileCount && params.lockedFileCount > 1
-      ? `The seller has uploaded ${params.lockedFileCount} delivery files (names only until you pay).`
+      ? `${params.lockedFileCount} files in the Delivery Vault (names only until you pay).`
       : params.lockedFileName
-        ? `The seller has uploaded: ${params.lockedFileName}`
-        : "The seller has uploaded the delivery.";
-  return [
+        ? `Delivery Vault: ${params.lockedFileName}`
+        : "Delivery: secured in the Delivery Vault.";
+  const core = [
     DIV,
     "OGMP MM — Payment Required",
     DIV,
     "",
     `Deal: ${params.dealCode}`,
-    `Status: Delivery Locked`,
+    "Status: Deal Protection — Delivery Vault locked",
+    "",
+    "What: pay escrow to unlock the vault.",
+    "Safe: funds stay in escrow until Buyer Review + Release Request.",
+    "Next: copy the address, send exact amount on the right network, then I Have Paid / Check Payment.",
     "",
     lockLine,
-    "",
-    "To unlock and download, send payment to the escrow address below.",
     "",
     `Amount: ${params.amount} ${params.currency}`,
     `Network: ${params.network}`,
     "",
-    "Payment Address:",
+    "Address:",
     params.paymentAddress,
     "",
     `Expires: ${exp}`,
     "",
-    "Important:",
-    "Send only the selected crypto on the correct network.",
+    "Send only the selected crypto on this network. Never pay outside OGMP MM.",
     "",
-    "Use the exact amount shown in the main deal card when possible.",
+    TRUST_OPS_FOOTER,
+    "",
+    COMMUNITY_TRUST_LINE,
   ].join("\n");
+  return `${DEAL_PROTECTION_BEFORE_PAY}\n\n${core}`;
 }
 
 export function buyerPaymentRequiredButtons(dealCode: string): { text: string; cb: string }[][] {
@@ -95,28 +104,33 @@ export function buyerPaymentRequiredButtons(dealCode: string): { text: string; c
       { text: "I Have Paid", cb: `bx:pay:${dealCode}` },
       { text: "Check Payment", cb: `bx:cp:${dealCode}` },
     ],
+    [{ text: "Copy Address", cb: `bx:addr:${dealCode}` }],
     [
+      { text: "View Deal Room", cb: `dr:enter:${dealCode}` },
       { text: "View Deal", cb: `d:v:${dealCode}` },
-      { text: "Deal Room", cb: `dr:enter:${dealCode}` },
     ],
-    [{ text: "Report Issue", cb: `d:rp:${dealCode}` }],
+    [{ text: "Open Case", cb: `d:rp:${dealCode}` }],
   ];
 }
 
 export function buyerUnlockedText(dealCode: string): string {
   return [
     DIV,
-    "OGMP MM — Delivery Unlocked",
+    "OGMP MM — Delivery Vault",
     DIV,
     "",
     `Deal: ${dealCode}`,
-    "Status: Payment Confirmed",
+    "Status: Delivery Vault unlocked",
     "",
-    "Your payment has been secured.",
+    "What: payment confirmed — vault is opening.",
+    "Safe: funds still in escrow until you finish Buyer Review (confirm).",
+    "Next: download, inspect, then Confirm Received — or Open Case if something is wrong.",
     "",
-    "The seller's delivery is now unlocked.",
+    "Only confirm after you fully checked the delivery.",
     "",
-    "Please review the files carefully before confirming release.",
+    TRUST_OPS_FOOTER,
+    "",
+    COMMUNITY_TRUST_LINE,
   ].join("\n");
 }
 
@@ -127,9 +141,10 @@ export function buyerUnlockedKeyboard(dealCode: string, showDownload: boolean): 
   return [
     row,
     [
-      { text: "Open Dispute", cb: `d:dp:${dealCode}` },
+      { text: "Open Case", cb: `d:rp:${dealCode}` },
       { text: "View Deal", cb: `d:v:${dealCode}` },
     ],
+    [{ text: "View Deal Room", cb: `dr:enter:${dealCode}` }],
   ];
 }
 
@@ -139,11 +154,17 @@ export function buyerReviewFollowupText(dealCode: string): string {
     "OGMP MM — Buyer Review",
     DIV,
     "",
-    "Please check the delivery carefully.",
-    "",
-    "Confirm only if everything is correct.",
-    "",
     `Deal: ${dealCode}`,
+    "",
+    "What: Buyer Review — check the unlocked vault contents.",
+    "Safe: escrow still holds funds until you confirm.",
+    "Next: Confirm Received, or Open Case if there is a problem.",
+    "",
+    "Only confirm after you fully checked the delivery.",
+    "",
+    TRUST_OPS_FOOTER,
+    "",
+    COMMUNITY_TRUST_LINE,
   ].join("\n");
 }
 
@@ -151,37 +172,37 @@ export function buyerReviewKeyboard(dealCode: string): { text: string; cb: strin
   return [
     [
       { text: "Confirm Received", cb: `d:rel:${dealCode}` },
-      { text: "Open Dispute", cb: `d:dp:${dealCode}` },
+      { text: "Open Case", cb: `d:rp:${dealCode}` },
     ],
-    [{ text: "View Deal", cb: `d:v:${dealCode}` }, { text: "Deal Room", cb: `dr:enter:${dealCode}` }],
+    [{ text: "View Deal", cb: `d:v:${dealCode}` }, { text: "View Deal Room", cb: `dr:enter:${dealCode}` }],
   ];
 }
 
 export function buyerPaymentSecuredAwaitingDeliveryText(dealCode: string): string {
   return [
     DIV,
-    "OGMP MM — Payment Confirmed",
+    "OGMP MM — Deal Protection",
     DIV,
     "",
     `Deal: ${dealCode}`,
     "",
-    "Your payment is secured in escrow.",
-    "",
-    "The seller can now post delivery in the deal room.",
+    "What: payment confirmed — waiting on Delivery Vault content.",
+    "Safe: your pay is in escrow.",
+    "Next: seller should upload/lock in Deal room; you’ll get files when the vault unlocks.",
   ].join("\n");
 }
 
 export function sellerFundsSecuredText(dealCode: string): string {
   return [
     DIV,
-    "OGMP MM — Funds Secured",
+    "OGMP MM — Deal Protection",
     DIV,
     "",
     `Deal: ${dealCode}`,
     "",
-    "Buyer payment is confirmed and secured in escrow.",
-    "",
-    "The buyer can now access the delivery.",
+    "What: buyer payment confirmed.",
+    "Safe: escrow holds funds until Buyer Review + Release Request.",
+    "Next: buyer can access the Delivery Vault; wait for their confirm.",
   ].join("\n");
 }
 
@@ -302,23 +323,26 @@ export async function resubmitSellerDeliveryNotify(dealId: string): Promise<void
 
 export function paymentNotDetectedBuyerText(): string {
   return [
-    "Payment not detected yet.",
+    "What: payment not detected yet.",
+    "Safe: nothing is released; your wallet is unchanged by OGMP MM.",
+    "Next: double-check amount, network, and address — then Check Payment again.",
     "",
-    "Please make sure:",
-    "• You sent the exact amount",
-    "• You used the correct network",
-    "• You sent to the correct address",
-    "",
-    "You can tap Check Payment again shortly.",
+    "Never pay outside OGMP MM.",
   ].join("\n");
 }
 
 export function paymentDetectedWaitingText(): string {
   return [
-    "Payment detected.",
-    "",
-    "Waiting for network confirmations before unlocking delivery.",
-    "",
-    "You can tap Check Payment again in a moment.",
+    "What: payment detected — waiting for confirmations.",
+    "Safe: Deal Protection keeps funds in escrow until confirmed.",
+    "Next: wait a moment, then Check Payment again — Delivery Vault unlocks automatically.",
+  ].join("\n");
+}
+
+export function paymentConfirmedUnlockingText(): string {
+  return [
+    "What: payment confirmed — Delivery Vault is unlocking.",
+    "Safe: escrow still applies until Buyer Review + Release Request.",
+    "Next: open your latest OGMP MM message or View Deal.",
   ].join("\n");
 }

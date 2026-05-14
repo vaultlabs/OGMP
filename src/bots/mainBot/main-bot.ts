@@ -4,6 +4,7 @@ import { logger } from "../../utils/logger.js";
 import { redisIncrWithTtl } from "../../utils/redis.js";
 import { prisma } from "../../db/prisma.js";
 import type { ParticipantRole, User } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { gatewayAccessMiddleware } from "./gatewayAccess.middleware.js";
 import {
   deleteGatewaySetting,
@@ -32,7 +33,16 @@ import { getActiveDealRoom } from "../../modules/dealMessages/deal-room-session.
 import { listDealMessages } from "../../modules/dealMessages/dealMessage.service.js";
 import { createReportSession } from "../../modules/reports/report-session.service.js";
 import { assertCanOpenNewReport, findSubmittedReviewReportForDeal } from "../../modules/reports/report.service.js";
-import { TERMS_TEXT, WELCOME } from "./messages.js";
+import { TERMS_TEXT } from "./messages.js";
+import {
+  COMMUNITY_TRUST_LINE,
+  HOW_IT_WORKS_PAGE,
+  PREMIUM_WELCOME,
+  SAFETY_RULES_PAGE,
+  TRUST_OPS_FOOTER,
+  WHY_TRUST_PAGE,
+  supportPageText,
+} from "./trust-copy.js";
 import {
   acceptTerms,
   buyerConfirmRelease,
@@ -64,7 +74,25 @@ import {
   adminForceRelease,
   exportDealsCsv,
 } from "../../modules/admin/admin.service.js";
-import { applyReview } from "../../services/reputation.service.js";
+import { applyReview, appendReviewOptionalText } from "../../services/reputation.service.js";
+import { formatReceiptPlain, rateButtons } from "../../services/deal-completion-notify.service.js";
+import { getAdminDashboardSnapshot } from "../../modules/admin/admin-dashboard.service.js";
+import {
+  clearBroadcastDraft,
+  clearBroadcastPhotoWait,
+  getBroadcastDraft,
+  parseBroadcastCommandBody,
+  runBroadcastFanout,
+  setBroadcastDraft,
+  setBroadcastPhotoWait,
+  peekBroadcastPhotoWait,
+} from "../../modules/admin/admin-broadcast.service.js";
+import {
+  clearReviewTextWait,
+  peekReviewTextWait,
+  setReviewTextWait,
+} from "../../modules/users/review-optional-text.service.js";
+import { computeCommunityBadge } from "../../modules/users/user-trust-badge.js";
 import { reviewSchema } from "../../modules/deals/deal.validation.js";
 import type { CreateDealInput } from "../../modules/deals/deal.service.js";
 import { userFacingDealStatus, userFacingDeliveryState } from "../../modules/deals/user-facing-status.js";
@@ -86,15 +114,19 @@ function startArg(ctx: Context): string | undefined {
 
 function mainMenuKb(isAdmin: boolean): InlineKeyboard {
   const kb = new InlineKeyboard()
-    .text("Create deal", "m:create")
-    .text("My deals", "m:deals")
+    .text("Create Deal", "m:create")
+    .text("My Deals", "m:deals")
     .row()
-    .text("Join deal", "m:join")
+    .text("Join Deal", "m:join")
     .row()
+    .text("How It Works", "m:how")
+    .text("Why Trust OGMP MM", "m:why")
+    .row()
+    .text("Profile", "m:profile")
     .text("Support", "m:support")
-    .text("Terms", "m:terms")
     .row()
-    .text("Profile", "m:profile");
+    .text("Safety Rules", "m:safety")
+    .text("Terms", "m:terms");
   if (isAdmin) kb.row().text("Admin", "m:admin");
   return kb;
 }
@@ -144,21 +176,21 @@ async function fmtDealCard(dealId: string, viewerUserId: string | null = null): 
 
   const lines: string[] = [
     "━━━━━━━━━━━━━━━━━━",
-    "OGMP MM — Deal",
+    "OGMP MM — Deal Room",
     "━━━━━━━━━━━━━━━━━━",
     "",
-    `<b>Deal</b>: ${e(d.dealCode)}`,
+    `<b>Deal ID</b>: ${e(d.dealCode)}`,
     `<b>Status</b>: ${e(displayStatus)}${d.frozen ? " (frozen)" : ""}`,
-    `<b>Internal status</b>: ${e(d.status)}`,
     `<b>Buyer</b>: ${e(buyer)}`,
     `<b>Seller</b>: ${e(seller)}`,
     `<b>Amount</b>: ${e(d.amount.toString())} ${e(d.currency)} (${e(d.network)})`,
     `<b>Fee</b>: ${e(d.feeAmount.toString())} (${e(String(d.feePayer))})`,
-    `<b>Payment</b>: ${pay ? e(pay.status) : "—"}`,
-    `<b>Delivery</b>: ${e(delivery)}`,
+    `<b>Escrow step</b>: ${pay ? e(pay.status.replace(/_/g, " ")) : "—"}`,
+    `<b>Delivery Vault</b>: ${e(delivery)}`,
+    `<b>Deal Protection</b>: ${d.frozen ? e("paused — Case Review") : e("on")}`,
     d.activeReport
-      ? `<b>Report</b>: ${e(d.activeReport.reportCode)} (${e(d.activeReport.status)})`
-      : "<b>Report</b>: none active",
+      ? `<b>Case Review</b>: ${e(d.activeReport.reportCode)} (${e(d.activeReport.status.replace(/_/g, " "))})`
+      : "<b>Case Review</b>: none open",
     `<b>Files submitted</b>: ${String(msgCount)}`,
     "Folders: send .zip / .rar / .7z or one file per message (no folder upload).",
     `<b>Last activity</b>: ${e(d.lastActivityAt.toISOString().slice(0, 19))}Z`,
@@ -171,19 +203,20 @@ ${e(termsPreview)}`,
     if (hideEscrowFromBuyer) {
       lines.push(
         "",
-        `<b>Escrow payment</b>: You will receive the exact payment address in a private message only after the seller locks delivery in Deal room.`,
-        `<i>${e("Never send funds to an address shared outside this bot.")}</i>`,
+        `<b>Escrow pay</b>: After the Delivery Vault locks, you’ll get a DM with the address. Until then, no payment.`,
+        `<i>${e("Never use an address from outside this bot.")}</i>`,
       );
     } else {
       lines.push(
         "",
-        `<b>Payment address</b>:`,
+        `<b>Escrow pay</b>:`,
         `<code>${e(d.paymentAddress)}</code>`,
         `<b>Exact amount</b>: ${e(d.amount.toString())} ${e(d.currency)} on ${e(d.network)}`,
-        `<i>${e("Never send crypto outside the address shown by this bot. Wrong network can mean total loss.")}</i>`,
+        `<i>${e("Wrong network = loss. Never pay outside OGMP MM.")}</i>`,
       );
     }
   }
+  lines.push("", `<i>${e(TRUST_OPS_FOOTER)}</i>`, `<i>${e(COMMUNITY_TRUST_LINE)}</i>`);
   return lines.join("\n");
 }
 
@@ -259,7 +292,7 @@ export function createMainBot(): Bot<Context> {
     }
 
     if (!user.termsAcceptedAt) {
-      await ctx.reply(WELCOME, { parse_mode: "Markdown" });
+      await ctx.reply(PREMIUM_WELCOME);
       await ctx.reply(TERMS_TEXT, {
         parse_mode: "Markdown",
         reply_markup: new InlineKeyboard().text("I agree to the Terms", "terms:ok"),
@@ -267,16 +300,9 @@ export function createMainBot(): Bot<Context> {
       return;
     }
 
-    await ctx.reply(WELCOME, {
-      parse_mode: "Markdown",
+    await ctx.reply(PREMIUM_WELCOME, {
       reply_markup: mainMenuKb(isAdminTelegramId(tid)),
     });
-    await ctx.reply(
-      "Use the menu when you need it — the bot also nudges you after each deal step.",
-      {
-        reply_markup: new InlineKeyboard().text("Create deal", "m:create").text("My deals", "m:deals"),
-      },
-    );
   }
 
   bot.command("start", async (ctx) => {
@@ -338,12 +364,45 @@ export function createMainBot(): Bot<Context> {
     await acceptTermsForUser(BigInt(ctx.from.id));
     await ctx.answerCallbackQuery({ text: "Terms accepted" });
     await ctx.editMessageText("Terms accepted. You're ready to use OGMP MM.");
-    await ctx.reply(WELCOME, {
-      parse_mode: "Markdown",
+    await ctx.reply(PREMIUM_WELCOME, {
       reply_markup: mainMenuKb(isAdminTelegramId(BigInt(ctx.from.id))),
     });
-    await ctx.reply("Start a deal or open one you were invited to.", {
-      reply_markup: new InlineKeyboard().text("Create deal", "m:create").text("My deals", "m:deals"),
+  });
+
+  bot.callbackQuery(/^m:menu$/, async (ctx) => {
+    if (!ctx.from) return;
+    await ctx.answerCallbackQuery();
+    await ctx.reply(PREMIUM_WELCOME, {
+      reply_markup: mainMenuKb(isAdminTelegramId(BigInt(ctx.from.id))),
+    });
+  });
+
+  bot.callbackQuery(/^m:how$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(HOW_IT_WORKS_PAGE, {
+      reply_markup: new InlineKeyboard()
+        .text("Create Deal", "m:create")
+        .text("Join Deal", "m:join")
+        .row()
+        .text("Back", "m:menu"),
+    });
+  });
+
+  bot.callbackQuery(/^m:why$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(WHY_TRUST_PAGE, {
+      reply_markup: new InlineKeyboard()
+        .text("Create Deal", "m:create")
+        .text("How It Works", "m:how")
+        .row()
+        .text("Back", "m:menu"),
+    });
+  });
+
+  bot.callbackQuery(/^m:safety$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(SAFETY_RULES_PAGE, {
+      reply_markup: new InlineKeyboard().text("I Understand", "m:menu").row().text("Back", "m:menu"),
     });
   });
 
@@ -457,29 +516,29 @@ export function createMainBot(): Bot<Context> {
     let hint = "";
     if (deal.status === "pending_acceptance") {
       hint =
-        "\n\nNext: both parties accept terms. The seller then uploads and locks delivery in Deal room; only then does the buyer receive the escrow payment address.";
+        "\n\nWhat: terms step.\nSafe: no escrow pay until Delivery Vault locks.\nNext: both accept terms, then seller fills the vault.";
     } else if (deal.status === "waiting_payment" || deal.status === "payment_detected") {
       if (deal.buyerId === u.id) {
         hint = lockedPre
-          ? "\n\nDelivery is locked. Send the exact amount on the correct network, then use I Have Paid or Check Payment."
-          : "\n\nWaiting for the seller to upload delivery. You will get a payment notice when files are locked.";
+          ? "\n\nWhat: Deal Protection — vault locked.\nSafe: escrow address is valid only from this bot.\nNext: pay exact amount → I Have Paid / Check Payment."
+          : "\n\nWhat: waiting on Delivery Vault.\nSafe: you are not asked to pay yet.\nNext: wait for Payment Required DM.";
       } else if (deal.sellerId === u.id) {
         hint =
-          "\n\nUpload delivery first: open Upload / Deal room and send files (.pdf, .txt, .zip, images, video). The buyer pays after your delivery is locked.";
+          "\n\nWhat: your turn to fill the Delivery Vault.\nSafe: files stay locked until buyer pays.\nNext: Deal room → upload → Submit Delivery.";
       } else {
-        hint = "\n\nWait for both sides to accept terms and complete delivery / payment.";
+        hint = "\n\nWhat: deal is starting.\nSafe: follow in-bot steps only.\nNext: wait for participants.";
       }
     } else if (deal.status === "funded") {
       if (deal.sellerId === u.id) {
         hint =
-          "\n\nFunds are in escrow. Add more in Upload / Deal room if needed, or use Mark delivered if the buyer is not yet in review.";
+          "\n\nWhat: buyer can access the vault.\nSafe: escrow still holds funds.\nNext: add files if needed, or Mark delivered.";
       } else if (deal.buyerId === u.id) {
-        hint = "\n\nCheck recent OGMP MM messages for files, or tap Download Files.";
+        hint = "\n\nWhat: Delivery Vault unlocked.\nSafe: escrow until Buyer Review ends.\nNext: check DMs / Download Files.";
       }
     } else if (deal.status === "item_delivered" && deal.buyerId === u.id) {
-      hint = "\n\nReview the delivery, then confirm release or open a dispute.";
+      hint = "\n\nWhat: Buyer Review.\nSafe: escrow until you confirm.\nNext: Confirm Received — or Open Case if wrong.";
     } else if (deal.status === "item_delivered" && deal.sellerId === u.id) {
-      hint = "\n\nWaiting for buyer confirmation.";
+      hint = "\n\nWhat: Buyer Review.\nSafe: funds still in escrow.\nNext: wait for buyer confirm or Case Review.";
     }
     const kb = new InlineKeyboard();
     if (deal.status === "pending_acceptance") {
@@ -509,14 +568,14 @@ export function createMainBot(): Bot<Context> {
       deal.status === "buyer_confirmed" ||
       deal.status === "release_requested"
     ) {
-      kb.text("Open dispute", `d:dp:${deal.dealCode}`).row();
+      kb.text("Hold deal", `d:dp:${deal.dealCode}`).row();
     }
     if (deal.status === "pending_acceptance" || deal.status === "waiting_payment") {
       kb.text("Request cancel", `d:cx:${deal.dealCode}`).row();
     }
     kb.row().text("Upload / Deal room", `dr:enter:${deal.dealCode}`).row();
     kb.text("Timeline", `d:tl:${deal.dealCode}`).text("Delivery log", `d:pr:${deal.dealCode}`).row();
-    kb.text("Report deal", `d:rp:${deal.dealCode}`);
+    kb.text("Open Case", `d:rp:${deal.dealCode}`);
     await ctx.reply(text + hint, { parse_mode: "HTML", reply_markup: kb });
   });
 
@@ -596,18 +655,20 @@ export function createMainBot(): Bot<Context> {
       if (activeRep) {
         const { rawToken } = await createReportSession({ dealId: deal.id, userId: u.id });
         const url = `https://t.me/${rb}?start=report_${rawToken}`;
-        await ctx.answerCallbackQuery({ text: "Deal under review — add evidence" });
+        await ctx.answerCallbackQuery({ text: "Case Review — add evidence" });
         await ctx.reply(
           [
-            "⚖ *This deal is already under admin review.*",
-            `Report: \`${activeRep.reportCode}\` (${activeRep.status})`,
+            "━━━━━━━━━━━━━━━━━━",
+            "OGMP MM — Case Review",
+            "━━━━━━━━━━━━━━━━━━",
             "",
-            "You can still *add screenshots, videos, documents, or archives* in **OGMP MM REPORT** using this secure, time-limited link:",
+            "What: case already open — add evidence.",
+            "Safe: keep using the linked REPORT bot session only.",
+            "Next: upload files there, then `/append_done`.",
+            "",
+            `Code: \`${activeRep.reportCode}\` (${activeRep.status})`,
+            "",
             url,
-            "",
-            "Upload what you need, then send `/append_done` in the report bot so admins are notified.",
-            "",
-            "_Do not share this link._",
           ].join("\n"),
           { parse_mode: "Markdown" },
         );
@@ -616,9 +677,21 @@ export function createMainBot(): Bot<Context> {
       await assertCanOpenNewReport(deal.id, u.id);
       const { rawToken } = await createReportSession({ dealId: deal.id, userId: u.id });
       const url = `https://t.me/${rb}?start=report_${rawToken}`;
-      await ctx.answerCallbackQuery({ text: "Opening report flow" });
+      await ctx.answerCallbackQuery({ text: "Case Review opening" });
       await ctx.reply(
-        `📝 *Report this deal*\n\nOpen **OGMP MM REPORT** to continue (secure, time-limited link):\n${url}\n\nDo not share this link.`,
+        [
+          "━━━━━━━━━━━━━━━━━━",
+          "OGMP MM — Case Review",
+          "━━━━━━━━━━━━━━━━━━",
+          "",
+          "What: submit evidence in OGMP MM REPORT.",
+          "Safe: deal stays linked; don’t move pay outside the bot.",
+          "Next: open the link, upload proof, follow prompts.",
+          "",
+          url,
+          "",
+          "_Private link — don’t share._",
+        ].join("\n"),
         { parse_mode: "Markdown" },
       );
     } catch (e) {
@@ -650,8 +723,9 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     const { runBuyerPaymentCheck } = await import("../../modules/payments/buyer-payment-check.service.js");
-    const msg = await runBuyerPaymentCheck(deal.id, BigInt(ctx.from.id));
     await ctx.answerCallbackQuery();
+    await ctx.reply("Checking payment status…");
+    const msg = await runBuyerPaymentCheck(deal.id, BigInt(ctx.from.id));
     await ctx.reply(msg);
   });
 
@@ -664,9 +738,37 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     const { runBuyerPaymentCheck } = await import("../../modules/payments/buyer-payment-check.service.js");
-    const msg = await runBuyerPaymentCheck(deal.id, BigInt(ctx.from.id));
     await ctx.answerCallbackQuery();
+    await ctx.reply("Checking payment status…");
+    const msg = await runBuyerPaymentCheck(deal.id, BigInt(ctx.from.id));
     await ctx.reply(msg);
+  });
+
+  bot.callbackQuery(/^bx:addr:(.+)$/, async (ctx) => {
+    if (!ctx.from || !ctx.match) return;
+    const u = await requireUser(ctx);
+    if (!u) return;
+    const deal = await prisma.deal.findUnique({ where: { dealCode: ctx.match[1] } });
+    if (!deal || deal.buyerId !== u.id || !deal.paymentAddress) {
+      await ctx.answerCallbackQuery({ text: "Unavailable", show_alert: true });
+      return;
+    }
+    const locked = deal.sellerId
+      ? await prisma.dealMessage.count({
+          where: { dealId: deal.id, lockedForBuyer: true, senderId: deal.sellerId },
+        })
+      : 0;
+    if (locked === 0) {
+      await ctx.answerCallbackQuery({
+        text: "Address is available after the seller locks delivery.",
+        show_alert: true,
+      });
+      return;
+    }
+    const addr = deal.paymentAddress;
+    const alertText = addr.length > 180 ? `${addr.slice(0, 160)}…` : addr;
+    await ctx.answerCallbackQuery({ text: alertText, show_alert: true });
+    await ctx.reply(`Escrow address (long-press to copy):\n\n${addr}`);
   });
 
   bot.callbackQuery(/^bx:dl:(.+)$/, async (ctx) => {
@@ -764,9 +866,21 @@ export function createMainBot(): Bot<Context> {
     if (!deal) return;
     try {
       await openDispute(u.id, deal.id);
-      await ctx.answerCallbackQuery({ text: "Dispute opened" });
+      await ctx.answerCallbackQuery({ text: "Case opened" });
       await ctx.reply(
-        "⚖ Dispute recorded. Please submit evidence with /dispute and follow prompts. Admins have been notified.",
+        [
+          "━━━━━━━━━━━━━━━━━━",
+          "OGMP MM — Case Review",
+          "━━━━━━━━━━━━━━━━━━",
+          "",
+          "What: deal is on admin hold.",
+          "Safe: funds/files stay under Deal Protection until admins decide.",
+          "Next: open your deal card → Open Case (REPORT) to add evidence.",
+          "",
+          "Upload clear proof so Case Review moves faster.",
+          "",
+          TRUST_OPS_FOOTER,
+        ].join("\n"),
       );
     } catch (e) {
       await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
@@ -793,18 +907,35 @@ export function createMainBot(): Bot<Context> {
     const u = await findUserByTelegramId(BigInt(ctx.from.id));
     await ctx.answerCallbackQuery();
     if (!u) return;
-    const flags = JSON.stringify(u.suspiciousFlags);
+    const community = computeCommunityBadge(u);
+    const adminBadge = u.profileBadge?.trim() || "—";
+    const un = u.username ? `@${u.username}` : "no username";
     await ctx.reply(
       [
-        `👤 *Your OGMP MM profile*`,
+        "━━━━━━━━━━━━━━━━━━",
+        "OGMP MM — Profile",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        "What: your trading snapshot here.",
+        "Safe: badges don’t move funds — Deal Protection rules still apply per deal.",
+        "Next: My Deals to jump back in.",
+        "",
+        `User: ${u.firstName ?? "User"} (${un})`,
+        `Status: ${u.banned ? "Restricted" : "Active"}`,
         `Completed deals: ${u.completedDeals}`,
-        `Disputed deals: ${u.disputedDeals}`,
-        `Cancelled deals: ${u.cancelledDeals}`,
-        `Reputation: ${u.reputationScore.toString()} ⭐`,
         `Total volume (USD field): ${u.totalVolumeUsd.toString()}`,
-        `Flags: \`${flags}\``,
+        `Rating: ${u.reputationScore.toString()} ⭐`,
+        `Case holds (lifetime): ${u.disputedDeals}`,
+        `Joined: ${u.joinedAt.toISOString().slice(0, 10)}`,
+        `Community tier: ${community}`,
+        `Admin badge: ${adminBadge}`,
+        "",
+        "Community:",
+        "Part of the 1,100+ member OGMP network",
+        "",
+        TRUST_OPS_FOOTER,
       ].join("\n"),
-      { parse_mode: "Markdown" },
+      { reply_markup: new InlineKeyboard().text("My Deals", "m:deals").text("Back", "m:menu") },
     );
   });
 
@@ -818,8 +949,20 @@ export function createMainBot(): Bot<Context> {
 
   bot.callbackQuery(/^m:support$/, async (ctx) => {
     await ctx.answerCallbackQuery();
+    const cfg = loadConfig();
+    const kb = new InlineKeyboard().text("Open Case", "m:deals");
+    const h = cfg.SUPPORT_USERNAME?.trim().replace(/^@+/, "");
+    if (h) kb.url("Contact Support", `https://t.me/${h}`);
+    else kb.text("Contact Support", "m:supportfmt");
+    kb.row().text("View Safety Rules", "m:safety").text("Back", "m:menu");
+    await ctx.reply(supportPageText(cfg.SUPPORT_USERNAME), { reply_markup: kb });
+  });
+
+  bot.callbackQuery(/^m:supportfmt$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
     await ctx.reply(
-      "Send `/support <issue_type> | <message> | optional_deal_code` (pipe-separated).\nYou may reply with a photo after.",
+      "Send `/support <issue_type> | <message> | optional_deal_code` (pipe-separated). You may attach a photo after sending the text.",
+      { reply_markup: new InlineKeyboard().text("Back", "m:support") },
     );
   });
 
@@ -836,17 +979,72 @@ export function createMainBot(): Bot<Context> {
     }
     await ctx.answerCallbackQuery();
     const kb = new InlineKeyboard()
+      .text("Dashboard", "a:dash")
+      .row()
       .text("Active deals", "a:act")
-      .text("Funded", "a:fnd")
+      .text("Open cases", "a:oc")
       .row()
-      .text("Disputed", "a:dis")
+      .text("Release requests", "a:relq")
+      .text("Disputed deals", "a:dis")
+      .row()
+      .text("Users", "a:users")
+      .text("Broadcast", "a:bc:help")
+      .row()
       .text("Export CSV", "a:csv")
+      .text("Gateway", "a:gw:menu")
       .row()
-      .text("Force release (reply deal id next)", "a:fr")
-      .text("Force refund", "a:fref")
-      .row()
-      .text("Gateway settings", "a:gw:menu");
-    await ctx.reply("🛡 *Admin panel*", { parse_mode: "Markdown", reply_markup: kb });
+      .text("Force release (reply id next)", "a:fr")
+      .text("Force refund", "a:fref");
+    await ctx.reply(
+      [
+        "━━━━━━━━━━━━━━━━━━",
+        "OGMP MM — Admin Dashboard",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        "Pick a tool below. Dashboard shows live counters.",
+        "",
+        TRUST_OPS_FOOTER,
+      ].join("\n"),
+      { reply_markup: kb },
+    );
+  });
+
+  bot.callbackQuery(/^a:dash$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const s = await getAdminDashboardSnapshot();
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      [
+        "━━━━━━━━━━━━━━━━━━",
+        "OGMP MM — Admin Dashboard",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        `Active deals: ${s.activeDeals}`,
+        `Funded: ${s.fundedDeals}`,
+        `Release requests: ${s.releaseRequested}`,
+        `Open cases (reports): ${s.openReports}`,
+        `Frozen deals: ${s.frozenDeals}`,
+        `Disputed deals: ${s.disputedDeals}`,
+        `Completed deals: ${s.completedDeals}`,
+        `Users: ${s.totalUsers}`,
+        `Fees (released deals, sum): ${s.feesEarnedApprox}`,
+        "",
+        TRUST_OPS_FOOTER,
+      ].join("\n"),
+      {
+        reply_markup: new InlineKeyboard()
+          .text("Active deals", "a:act")
+          .text("Open cases", "a:oc")
+          .row()
+          .text("Release requests", "a:relq")
+          .text("Broadcast", "a:bc:help")
+          .row()
+          .text("Export CSV", "a:csv")
+          .text("Gateway", "a:gw:menu")
+          .row()
+          .text("Back", "m:admin"),
+      },
+    );
   });
 
   bot.callbackQuery(/^a:act$/, async (ctx) => {
@@ -885,6 +1083,53 @@ export function createMainBot(): Bot<Context> {
     const csv = await exportDealsCsv();
     await ctx.answerCallbackQuery();
     await ctx.replyWithDocument(new InputFile(Buffer.from(csv, "utf8"), "deals-export.csv"));
+  });
+
+  bot.callbackQuery(/^a:oc$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const reps = await prisma.report.findMany({
+      where: { status: { in: ["submitted", "under_review", "waiting_for_buyer", "waiting_for_seller"] } },
+      take: 25,
+      orderBy: { createdAt: "desc" },
+    });
+    await ctx.answerCallbackQuery();
+    await ctx.reply(reps.length ? reps.map((r) => `${r.reportCode} — ${r.status}`).join("\n") : "No open cases.");
+  });
+
+  bot.callbackQuery(/^a:relq$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const deals = await prisma.deal.findMany({
+      where: { status: "release_requested" },
+      take: 25,
+      orderBy: { updatedAt: "desc" },
+    });
+    await ctx.answerCallbackQuery();
+    await ctx.reply(deals.length ? deals.map((d) => `${d.dealCode}`).join("\n") : "No release requests.");
+  });
+
+  bot.callbackQuery(/^a:users$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const active = await prisma.user.count({ where: { banned: false } });
+    const banned = await prisma.user.count({ where: { banned: true } });
+    await ctx.answerCallbackQuery();
+    await ctx.reply(`Users (active): ${active}\nBanned: ${banned}`);
+  });
+
+  bot.callbackQuery(/^a:bc:help$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      [
+        "Official broadcast (`/broadcast`):",
+        "",
+        "• Text: `/broadcast Your message here`",
+        "• With URL button: message|||Button label|||https://example.com",
+        "• Photo: `/broadcastphoto` then send a photo (caption optional) within 5 minutes.",
+        "",
+        "You will get Confirm / Cancel before anything is sent.",
+      ].join("\n"),
+      { reply_markup: new InlineKeyboard().text("« Admin", "m:admin") },
+    );
   });
 
   bot.callbackQuery(/^a:gw:menu$/, async (ctx) => {
@@ -1116,7 +1361,13 @@ export function createMainBot(): Bot<Context> {
 
   bot.command("dispute", async (ctx) => {
     await ctx.reply(
-      "Open a dispute from the deal card (button), then add evidence here as replies with text or attachments (handled in future iterations via deal context). For now, email-style evidence can be sent through /support with deal code.",
+      [
+        "What: admin hold on a live deal.",
+        "Safe: use Deal Protection — don’t move pay outside the bot.",
+        "Next: open the deal card → Hold deal, then Open Case to upload evidence in REPORT.",
+        "",
+        "General questions: `/support ...` with your deal code.",
+      ].join("\n"),
     );
   });
 
@@ -1224,6 +1475,36 @@ export function createMainBot(): Bot<Context> {
     await clearCreateWizard(BigInt(ctx.from.id));
     await ctx.answerCallbackQuery({ text: "Cancelled" });
     await ctx.editMessageText("Wizard cancelled.");
+  });
+
+  bot.on("message:text", async (ctx, next) => {
+    if (!ctx.from || ctx.message.text.startsWith("/")) return next();
+    if (await getActiveDealRoom(BigInt(ctx.from.id))) return next();
+    const tid = BigInt(ctx.from.id);
+    const pendingDealId = await peekReviewTextWait(tid);
+    if (!pendingDealId) return next();
+    const u = await requireUser(ctx);
+    if (!u) return next();
+    const deal = await prisma.deal.findUnique({
+      where: { id: pendingDealId },
+      select: { id: true, buyerId: true, sellerId: true, status: true },
+    });
+    if (!deal || deal.status !== "released" || (deal.buyerId !== u.id && deal.sellerId !== u.id)) {
+      await clearReviewTextWait(tid);
+      return next();
+    }
+    const ok = await appendReviewOptionalText({
+      dealId: deal.id,
+      fromUserId: u.id,
+      text: ctx.message.text.trim(),
+    });
+    if (ok) {
+      await clearReviewTextWait(tid);
+      await ctx.reply("Thanks — your optional review text is saved.");
+      return;
+    }
+    await clearReviewTextWait(tid);
+    return next();
   });
 
   bot.on("message:text", async (ctx, next) => {
@@ -1492,6 +1773,218 @@ export function createMainBot(): Bot<Context> {
     } catch {
       await ctx.reply("Invalid id");
     }
+  });
+
+  bot.callbackQuery(/^rstar:(.+):(B|S):([1-5])$/, async (ctx) => {
+    if (!ctx.from || !ctx.match) return;
+    const dealCode = ctx.match[1]!;
+    const slot = ctx.match[2] as "B" | "S";
+    const stars = Number(ctx.match[3]!);
+    const me = await requireUser(ctx);
+    if (!me) return;
+    const deal = await prisma.deal.findUnique({
+      where: { dealCode },
+      include: { buyer: true, seller: true },
+    });
+    if (!deal || deal.status !== "released" || !deal.buyerId || !deal.sellerId) {
+      await ctx.answerCallbackQuery({ text: "Not available", show_alert: true });
+      return;
+    }
+    if (deal.buyerId !== me.id && deal.sellerId !== me.id) {
+      await ctx.answerCallbackQuery({ text: "Not your deal", show_alert: true });
+      return;
+    }
+    const toUserId = slot === "S" ? deal.sellerId : deal.buyerId;
+    if (me.id === toUserId) {
+      await ctx.answerCallbackQuery({ text: "Invalid action", show_alert: true });
+      return;
+    }
+    try {
+      await applyReview({
+        dealId: deal.id,
+        fromUserId: me.id,
+        toUserId,
+        stars,
+      });
+      await setReviewTextWait(BigInt(ctx.from.id), deal.id);
+      await ctx.answerCallbackQuery({ text: "Saved — thanks" });
+      await ctx.reply(
+        "Optional: send one short message with extra feedback for your rating, or use /skipreview to skip.",
+      );
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+        await ctx.answerCallbackQuery({ text: "You already rated this deal.", show_alert: true });
+        return;
+      }
+      throw e;
+    }
+  });
+
+  bot.callbackQuery(/^rcpt:(.+)$/, async (ctx) => {
+    if (!ctx.from || !ctx.match) return;
+    const dealCode = ctx.match[1]!;
+    const me = await requireUser(ctx);
+    if (!me) return;
+    const deal = await prisma.deal.findUnique({
+      where: { dealCode },
+      include: { buyer: true, seller: true },
+    });
+    if (!deal || deal.status !== "released") {
+      await ctx.answerCallbackQuery({ text: "Receipt not available", show_alert: true });
+      return;
+    }
+    if (deal.buyerId !== me.id && deal.sellerId !== me.id) {
+      await ctx.answerCallbackQuery({ text: "Forbidden", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+    await ctx.reply(formatReceiptPlain(deal));
+  });
+
+  bot.callbackQuery(/^ropen:(.+)$/, async (ctx) => {
+    if (!ctx.from || !ctx.match) return;
+    const dealCode = ctx.match[1]!;
+    const me = await requireUser(ctx);
+    if (!me) return;
+    const deal = await prisma.deal.findUnique({
+      where: { dealCode },
+      include: { buyer: true, seller: true },
+    });
+    if (!deal || deal.status !== "released" || !deal.buyerId || !deal.sellerId) {
+      await ctx.answerCallbackQuery({ text: "Not available", show_alert: true });
+      return;
+    }
+    if (deal.buyerId !== me.id && deal.sellerId !== me.id) {
+      await ctx.answerCallbackQuery({ text: "Forbidden", show_alert: true });
+      return;
+    }
+    const existing = await prisma.review.findUnique({
+      where: { dealId_fromUserId: { dealId: deal.id, fromUserId: me.id } },
+    });
+    if (existing) {
+      await ctx.answerCallbackQuery({ text: "You already rated this deal.", show_alert: true });
+      return;
+    }
+    const targetSlot: "B" | "S" = me.id === deal.buyerId ? "S" : "B";
+    const who = targetSlot === "S" ? "seller" : "buyer";
+    await ctx.answerCallbackQuery();
+    const rb = rateButtons(deal.dealCode, targetSlot);
+    const kb = new InlineKeyboard();
+    rb.forEach((row, i) => {
+      for (const b of row) kb.text(b.text, b.cb);
+      if (i < rb.length - 1) kb.row();
+    });
+    await ctx.reply(
+      [
+        "━━━━━━━━━━━━━━━━━━",
+        "Rate this deal",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        `What: rate the ${who}.`,
+        "Safe: deal already completed.",
+        "Next: tap 1–5; optional one-line note after.",
+        "",
+        TRUST_OPS_FOOTER,
+      ].join("\n"),
+      { reply_markup: kb },
+    );
+  });
+
+  bot.callbackQuery(/^bc:go$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const tid = BigInt(ctx.from.id);
+    const d = await getBroadcastDraft(tid);
+    if (!d) {
+      await ctx.answerCallbackQuery({ text: "Draft expired — run /broadcast again", show_alert: true });
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: "Sending…" });
+    await clearBroadcastDraft(tid);
+    const r = await runBroadcastFanout(ctx.api, d);
+    await ctx.reply(`Broadcast finished.\nSent: ${r.sent}\nErrors: ${r.errors}`);
+  });
+
+  bot.callbackQuery(/^bc:cx$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    await clearBroadcastDraft(BigInt(ctx.from.id));
+    await ctx.answerCallbackQuery({ text: "Cancelled" });
+  });
+
+  bot.command("broadcast", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const raw = ctx.message?.text?.replace(/^\/broadcast(@\w+)?\s*/i, "").trim() ?? "";
+    if (!raw) {
+      await ctx.reply("Usage: `/broadcast your message` or `text|||Button|||https://example.com`");
+      return;
+    }
+    let draft;
+    try {
+      draft = parseBroadcastCommandBody(raw);
+    } catch {
+      await ctx.reply("Could not parse broadcast. Use https URLs only for buttons.");
+      return;
+    }
+    await setBroadcastDraft(BigInt(ctx.from.id), draft);
+    await ctx.reply("Confirm official broadcast to all users?", {
+      reply_markup: new InlineKeyboard().text("Confirm", "bc:go").text("Cancel", "bc:cx"),
+    });
+  });
+
+  bot.command("broadcastphoto", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    await setBroadcastPhotoWait(BigInt(ctx.from.id));
+    await ctx.reply("Send a photo in this chat within 5 minutes (optional caption).");
+  });
+
+  bot.on("message:photo", async (ctx, next) => {
+    if (!ctx.from) return next();
+    if (!isAdminTelegramId(BigInt(ctx.from.id))) return next();
+    if (!(await peekBroadcastPhotoWait(BigInt(ctx.from.id)))) return next();
+    await clearBroadcastPhotoWait(BigInt(ctx.from.id));
+    const photos = ctx.message.photo;
+    const fid = photos?.length ? photos[photos.length - 1]!.file_id : undefined;
+    const cap = (ctx.message.caption ?? "").trim() || "Official announcement";
+    if (!fid) return next();
+    await setBroadcastDraft(BigInt(ctx.from.id), { text: cap.slice(0, 1024), photoFileId: fid });
+    await ctx.reply("Confirm official photo broadcast to all users?", {
+      reply_markup: new InlineKeyboard().text("Confirm", "bc:go").text("Cancel", "bc:cx"),
+    });
+  });
+
+  bot.command("setbadge", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const parts = ctx.message?.text?.trim().split(/\s+/) ?? [];
+    if (parts.length < 3) {
+      await ctx.reply("Usage: `/setbadge @username Badge Name` or `/setbadge TELEGRAM_ID Badge Name`");
+      return;
+    }
+    const target = parts[1]!;
+    const badge = parts.slice(2).join(" ").slice(0, 64);
+    let user: User | null = null;
+    if (target.startsWith("@")) {
+      const uname = target.replace(/^@+/, "").toLowerCase();
+      user = await prisma.user.findFirst({
+        where: { username: { equals: uname, mode: "insensitive" } },
+      });
+    } else if (/^\d+$/.test(target)) {
+      try {
+        user = await prisma.user.findUnique({ where: { telegramId: BigInt(target) } });
+      } catch {
+        user = null;
+      }
+    }
+    if (!user) {
+      await ctx.reply("User not found.");
+      return;
+    }
+    await prisma.user.update({ where: { id: user.id }, data: { profileBadge: badge } });
+    await ctx.reply(`Badge updated: ${badge}`);
+  });
+
+  bot.command("skipreview", async (ctx) => {
+    if (!ctx.from) return;
+    await clearReviewTextWait(BigInt(ctx.from.id));
+    await ctx.reply("Okay — no optional review text will be added.");
   });
 
   return bot;

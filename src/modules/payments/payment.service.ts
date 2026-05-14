@@ -8,6 +8,10 @@ import { assertValidDealTransition } from "../../services/escrow-state-machine.j
 import { logger } from "../../utils/logger.js";
 import { createHash } from "node:crypto";
 
+export function isPrismaUniqueConstraintError(e: unknown): boolean {
+  return typeof e === "object" && e !== null && "code" in e && (e as { code: string }).code === "P2002";
+}
+
 function mapProviderStatus(
   s: "pending" | "detecting" | "confirming" | "confirmed" | "underpaid" | "overpaid" | "expired",
 ): PaymentRecordStatus {
@@ -182,8 +186,7 @@ export async function processWebhookPayload(
       },
     });
   } catch (e: unknown) {
-    const code = typeof e === "object" && e !== null && "code" in e ? String((e as { code: unknown }).code) : "";
-    if (code === "P2002") {
+    if (isPrismaUniqueConstraintError(e)) {
       return { ok: true, message: "duplicate" };
     }
     throw e;
