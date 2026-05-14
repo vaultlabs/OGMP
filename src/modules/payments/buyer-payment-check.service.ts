@@ -5,6 +5,11 @@ import {
   paymentDetectedWaitingText,
   paymentNotDetectedBuyerText,
 } from "../../services/delivery.service.js";
+import { escapeTelegramHtml } from "../../utils/telegram-html.js";
+
+function plainLinesHtml(lines: string[]): string {
+  return lines.map((l) => escapeTelegramHtml(l)).join("\n");
+}
 
 export async function runBuyerPaymentCheck(dealId: string, requesterTelegramId: bigint): Promise<string> {
   const deal = await prisma.deal.findUnique({
@@ -12,17 +17,21 @@ export async function runBuyerPaymentCheck(dealId: string, requesterTelegramId: 
     include: { buyer: true },
   });
   if (!deal?.buyer || deal.buyer.telegramId !== requesterTelegramId) {
-    return "Only the buyer can check payment for this deal.";
+    return plainLinesHtml(["Only the buyer can check payment for this deal."]);
   }
   if (!deal.sellerId) {
-    return "This deal is missing a seller.";
+    return plainLinesHtml(["This deal is missing a seller."]);
   }
   if (deal.status === "waiting_payment" || deal.status === "payment_detected") {
     const locked = await prisma.dealMessage.count({
       where: { dealId, lockedForBuyer: true, senderId: deal.sellerId },
     });
     if (locked === 0) {
-      return "What: payment not open yet.\nSafe: nothing leaves escrow.\nNext: seller locks the Delivery Vault first — you’ll get a Payment Required DM.";
+      return plainLinesHtml([
+        "What: payment not open yet.",
+        "Safe: nothing leaves escrow.",
+        "Next: the seller locks the Delivery Vault first — you will get a Payment Required DM.",
+      ]);
     }
   }
   await applyPaymentSyncForDeal(dealId);
@@ -31,7 +40,7 @@ export async function runBuyerPaymentCheck(dealId: string, requesterTelegramId: 
     include: { buyer: true },
   });
   const pay = await prisma.payment.findFirst({ where: { dealId }, orderBy: { createdAt: "desc" } });
-  if (!refreshed || !pay) return "No payment record for this deal.";
+  if (!refreshed || !pay) return plainLinesHtml(["No payment record for this deal."]);
 
   if (refreshed.status === "funded" || refreshed.status === "item_delivered") {
     return paymentConfirmedUnlockingText();

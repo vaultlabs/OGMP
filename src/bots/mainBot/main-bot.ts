@@ -37,10 +37,11 @@ import {
 import { listDealMessages } from "../../modules/dealMessages/dealMessage.service.js";
 import { createReportSession } from "../../modules/reports/report-session.service.js";
 import { assertCanOpenNewReport, findSubmittedReviewReportForDeal } from "../../modules/reports/report.service.js";
-import { TERMS_TEXT } from "./messages.js";
+import { TERMS_HTML } from "./messages.js";
 import {
   COMMUNITY_TRUST_LINE,
   HOW_IT_WORKS_PAGE,
+  MAIN_UI_PARSE_MODE,
   PREMIUM_WELCOME,
   SAFETY_RULES_PAGE,
   TRUST_OPS_FOOTER,
@@ -79,7 +80,7 @@ import {
   exportDealsCsv,
 } from "../../modules/admin/admin.service.js";
 import { applyReview, appendReviewOptionalText } from "../../services/reputation.service.js";
-import { formatReceiptPlain, rateButtons } from "../../services/deal-completion-notify.service.js";
+import { formatReceiptHtml, rateButtons } from "../../services/deal-completion-notify.service.js";
 import { getAdminDashboardSnapshot } from "../../modules/admin/admin-dashboard.service.js";
 import {
   clearBroadcastDraft,
@@ -123,13 +124,13 @@ function mainMenuKb(isAdmin: boolean): InlineKeyboard {
     .row()
     .text("Join Deal", "m:join")
     .row()
-    .text("How It Works", "m:how")
-    .text("Why Trust OGMP MM", "m:why")
+    .text("How it works", "m:how")
+    .text("Why trust us", "m:why")
     .row()
     .text("Profile", "m:profile")
     .text("Support", "m:support")
     .row()
-    .text("Safety Rules", "m:safety")
+    .text("Safety rules", "m:safety")
     .text("Terms", "m:terms");
   if (isAdmin) kb.row().text("Admin", "m:admin");
   return kb;
@@ -179,9 +180,8 @@ async function fmtDealCard(dealId: string, viewerUserId: string | null = null): 
     sellerLockedCount === 0;
 
   const lines: string[] = [
-    "━━━━━━━━━━━━━━━━━━",
-    "OGMP MM — Deal Room",
-    "━━━━━━━━━━━━━━━━━━",
+    `<b>OGMP MM</b> · <i>Deal room</i>`,
+    `<code>────────────────────────</code>`,
     "",
     `<b>Deal ID</b>: ${e(d.dealCode)}`,
     `<b>Status</b>: ${e(displayStatus)}${d.frozen ? " (frozen)" : ""}`,
@@ -300,21 +300,22 @@ export function createMainBot(): Bot<Context> {
           reply_markup: joinSuccessKeyboard(deal.dealCode),
         });
       } catch (e) {
-        await ctx.reply(`❌ ${String((e as Error).message)}`);
+        await ctx.reply(replyTextForCaughtError(e));
       }
       return;
     }
 
     if (!user.termsAcceptedAt) {
-      await ctx.reply(PREMIUM_WELCOME);
-      await ctx.reply(TERMS_TEXT, {
-        parse_mode: "Markdown",
+      await ctx.reply(PREMIUM_WELCOME, { parse_mode: MAIN_UI_PARSE_MODE });
+      await ctx.reply(TERMS_HTML, {
+        parse_mode: MAIN_UI_PARSE_MODE,
         reply_markup: new InlineKeyboard().text("I agree to the Terms", "terms:ok"),
       });
       return;
     }
 
     await ctx.reply(PREMIUM_WELCOME, {
+      parse_mode: MAIN_UI_PARSE_MODE,
       reply_markup: mainMenuKb(isAdminTelegramId(tid)),
     });
   }
@@ -331,6 +332,7 @@ export function createMainBot(): Bot<Context> {
       const arg = startArg(ctx);
       if (arg?.startsWith("join_")) await setPendingJoinInvite(tid, arg.slice("join_".length));
       await ctx.reply(GATEWAY_ACCESS_REQUIRED_LONG, {
+        parse_mode: MAIN_UI_PARSE_MODE,
         reply_markup: gatewayAccessKeyboard(eff.joinUrl),
       });
       return;
@@ -358,7 +360,7 @@ export function createMainBot(): Bot<Context> {
 
     if (u.gatewayAcceptedAt) {
       await ctx.answerCallbackQuery({ text: "Already approved" });
-      await ctx.reply(GATEWAY_ACCESS_APPROVED);
+      await ctx.reply(GATEWAY_ACCESS_APPROVED, { parse_mode: MAIN_UI_PARSE_MODE });
       const fresh = await findUserByTelegramId(tid);
       if (fresh) await processMainOnboarding(ctx, fresh);
       return;
@@ -368,7 +370,7 @@ export function createMainBot(): Bot<Context> {
     await ctx.answerCallbackQuery({ text: "Welcome" });
 
     u = await markUserGatewayAccess({ userId: u.id, verified: false });
-    await ctx.reply(GATEWAY_ACCESS_APPROVED);
+    await ctx.reply(GATEWAY_ACCESS_APPROVED, { parse_mode: MAIN_UI_PARSE_MODE });
 
     await processMainOnboarding(ctx, u);
   });
@@ -379,6 +381,7 @@ export function createMainBot(): Bot<Context> {
     await ctx.answerCallbackQuery({ text: "Terms accepted" });
     await ctx.editMessageText("Terms accepted. You're ready to use OGMP MM.");
     await ctx.reply(PREMIUM_WELCOME, {
+      parse_mode: MAIN_UI_PARSE_MODE,
       reply_markup: mainMenuKb(isAdminTelegramId(BigInt(ctx.from.id))),
     });
   });
@@ -387,6 +390,7 @@ export function createMainBot(): Bot<Context> {
     if (!ctx.from) return;
     await ctx.answerCallbackQuery();
     await ctx.reply(PREMIUM_WELCOME, {
+      parse_mode: MAIN_UI_PARSE_MODE,
       reply_markup: mainMenuKb(isAdminTelegramId(BigInt(ctx.from.id))),
     });
   });
@@ -394,6 +398,7 @@ export function createMainBot(): Bot<Context> {
   bot.callbackQuery(/^m:how$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     await ctx.reply(HOW_IT_WORKS_PAGE, {
+      parse_mode: MAIN_UI_PARSE_MODE,
       reply_markup: new InlineKeyboard()
         .text("Create Deal", "m:create")
         .text("Join Deal", "m:join")
@@ -405,6 +410,7 @@ export function createMainBot(): Bot<Context> {
   bot.callbackQuery(/^m:why$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     await ctx.reply(WHY_TRUST_PAGE, {
+      parse_mode: MAIN_UI_PARSE_MODE,
       reply_markup: new InlineKeyboard()
         .text("Create Deal", "m:create")
         .text("How It Works", "m:how")
@@ -416,6 +422,7 @@ export function createMainBot(): Bot<Context> {
   bot.callbackQuery(/^m:safety$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     await ctx.reply(SAFETY_RULES_PAGE, {
+      parse_mode: MAIN_UI_PARSE_MODE,
       reply_markup: new InlineKeyboard().text("I Understand", "m:menu").row().text("Back", "m:menu"),
     });
   });
@@ -742,7 +749,7 @@ export function createMainBot(): Bot<Context> {
     await ctx.answerCallbackQuery();
     await ctx.reply("Checking payment status…");
     const msg = await runBuyerPaymentCheck(deal.id, BigInt(ctx.from.id));
-    await ctx.reply(msg);
+    await ctx.reply(msg, { parse_mode: MAIN_UI_PARSE_MODE });
   });
 
   bot.callbackQuery(/^bx:cp:(.+)$/, async (ctx) => {
@@ -757,7 +764,7 @@ export function createMainBot(): Bot<Context> {
     await ctx.answerCallbackQuery();
     await ctx.reply("Checking payment status…");
     const msg = await runBuyerPaymentCheck(deal.id, BigInt(ctx.from.id));
-    await ctx.reply(msg);
+    await ctx.reply(msg, { parse_mode: MAIN_UI_PARSE_MODE });
   });
 
   bot.callbackQuery(/^bx:addr:(.+)$/, async (ctx) => {
@@ -971,7 +978,10 @@ export function createMainBot(): Bot<Context> {
     if (h) kb.url("Contact Support", `https://t.me/${h}`);
     else kb.text("Contact Support", "m:supportfmt");
     kb.row().text("View Safety Rules", "m:safety").text("Back", "m:menu");
-    await ctx.reply(supportPageText(cfg.SUPPORT_USERNAME), { reply_markup: kb });
+    await ctx.reply(supportPageText(cfg.SUPPORT_USERNAME), {
+      parse_mode: MAIN_UI_PARSE_MODE,
+      reply_markup: kb,
+    });
   });
 
   bot.callbackQuery(/^m:supportfmt$/, async (ctx) => {
@@ -984,7 +994,7 @@ export function createMainBot(): Bot<Context> {
 
   bot.callbackQuery(/^m:terms$/, async (ctx) => {
     await ctx.answerCallbackQuery();
-    await ctx.reply(TERMS_TEXT, { parse_mode: "Markdown" });
+    await ctx.reply(TERMS_HTML, { parse_mode: MAIN_UI_PARSE_MODE });
   });
 
   bot.callbackQuery(/^m:admin$/, async (ctx) => {
@@ -1327,7 +1337,7 @@ export function createMainBot(): Bot<Context> {
   });
 
   bot.command("terms", async (ctx) => {
-    await ctx.reply(TERMS_TEXT, { parse_mode: "Markdown" });
+    await ctx.reply(TERMS_HTML, { parse_mode: MAIN_UI_PARSE_MODE });
   });
 
   bot.command("support", async (ctx) => {
@@ -1855,7 +1865,7 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     await ctx.answerCallbackQuery();
-    await ctx.reply(formatReceiptPlain(deal));
+    await ctx.reply(formatReceiptHtml(deal), { parse_mode: MAIN_UI_PARSE_MODE });
   });
 
   bot.callbackQuery(/^ropen:(.+)$/, async (ctx) => {

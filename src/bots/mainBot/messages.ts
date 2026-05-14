@@ -1,14 +1,20 @@
-export const TERMS_TEXT = `*OGMP MM — Terms of Service*
+/** Terms of Service — HTML for Telegram */
+export const TERMS_HTML = [
+  "<b>OGMP MM — Terms of Service</b>",
+  "",
+  "OGMP MM is a professional escrow coordination tool for <b>lawful peer-to-peer transactions only</b>.",
+  "",
+  "You may <b>not</b> use this service for scams, fraud, stolen goods, illegal goods or services, account theft, carding, malware, drugs, weapons, doxxing, or any illegal activity.",
+  "",
+  "Admins may freeze or cancel deals that appear suspicious. Fraudulent activity may result in a permanent ban.",
+  "",
+  "You are solely responsible for verifying your counterparty and the accuracy of deal details. Cryptocurrency transfers can be irreversible. Sending assets on the wrong network may result in permanent loss.",
+  "",
+  "<i>By continuing, you confirm that you have read and agree to these terms.</i>",
+].join("\n");
 
-OGMP MM is a professional escrow coordination tool for *lawful peer-to-peer transactions only*.
-
-You may *not* use this service for scams, fraud, stolen goods, illegal goods or services, account theft, carding, malware, drugs, weapons, doxxing, or any illegal activity.
-
-Admins may freeze or cancel deals that appear suspicious. Fraudulent activity may result in a permanent ban.
-
-You are solely responsible for verifying your counterparty and the accuracy of deal details. Cryptocurrency transfers can be irreversible. Sending assets on the wrong network may result in permanent loss.
-
-By continuing, you confirm that you have read and agree to these terms.`;
+/** Alias for HTML terms (legacy name). */
+export const TERMS_TEXT = TERMS_HTML;
 
 export const WELCOME = `*Welcome to OGMP MM*
 

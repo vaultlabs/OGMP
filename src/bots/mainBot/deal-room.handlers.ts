@@ -21,6 +21,7 @@ import {
   sellerFileSecuredText,
 } from "../../services/delivery.service.js";
 import { formatDealRoomEntryPlain } from "./deal-room-welcome.js";
+import { MAIN_UI_PARSE_MODE } from "./trust-copy.js";
 
 async function resolveDealIdFromCode(code: string): Promise<string | null> {
   const d = await prisma.deal.findUnique({ where: { dealCode: code } });
@@ -134,6 +135,7 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
       if (sellerLocked) {
         const fn = fileName ?? type;
         await ctx.reply(sellerFileSecuredText(deal.dealCode, fn), {
+          parse_mode: MAIN_UI_PARSE_MODE,
           reply_markup: sellerFileSecuredKeyboard(deal.dealCode),
         });
         await notifyBuyerPaymentRequired(dealId);

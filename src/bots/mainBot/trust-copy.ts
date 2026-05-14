@@ -1,126 +1,147 @@
-/** Shared trust / community lines — keep factual, not hypey. */
+import { escapeTelegramHtml } from "../../utils/telegram-html.js";
+
+/** Use with all strings in this file that use HTML tags. */
+export const MAIN_UI_PARSE_MODE = "HTML" as const;
+
+/** Plain one-liners (also embedded in HTML deal cards via escape). */
 export const COMMUNITY_TRUST_LINE = "Trusted by 1,100+ OGMP community members.";
 export const COMMUNITY_TRUST_ALT = "Part of a growing 1,100+ member trading community.";
-
-/** One-line safety + brand (used under many screens). */
 export const TRUST_OPS_FOOTER =
   "Deal Protection: escrow holds funds, the Delivery Vault holds files, and Case Review is there if something goes wrong.";
 
+export const RULER_HTML = "<code>────────────────────────</code>";
+
+function footerHtml(): string {
+  return [
+    "",
+    `<i>${TRUST_OPS_FOOTER}</i>`,
+    "",
+    `<i>${COMMUNITY_TRUST_LINE}</i>`,
+  ].join("\n");
+}
+
 export const PREMIUM_WELCOME = [
-  "━━━━━━━━━━━━━━━━━━",
-  "OGMP MM — Secure Middleman",
-  "━━━━━━━━━━━━━━━━━━",
+  `<b>OGMP MM</b> · <i>Secure escrow</i>`,
+  RULER_HTML,
   "",
-  "What: escrow deals with a clear path from upload to release.",
-  "Safe: funds stay in escrow; files stay in the Delivery Vault until payment confirms.",
-  "Next: create or join a deal, or open How It Works.",
+  "<b>What</b>",
+  "Structured crypto deals from delivery lock to release — without leaving Telegram.",
   "",
-  COMMUNITY_TRUST_LINE,
+  "<b>Safe</b>",
+  "Funds stay in escrow. Files stay in the Delivery Vault until payment confirms.",
   "",
-  "Vault → Pay → Unlock → Buyer Review → Release Request",
+  "<b>Next</b>",
+  "Pick an action below. New here? Open <b>How it works</b> first.",
   "",
-  "Choose an option below.",
-  "",
-  TRUST_OPS_FOOTER,
+  "<i>Vault → Pay → Unlock → Buyer Review → Release</i>",
+  footerHtml(),
 ].join("\n");
 
 export const WHY_TRUST_PAGE = [
-  "━━━━━━━━━━━━━━━━━━",
-  "Why Trust OGMP MM?",
-  "━━━━━━━━━━━━━━━━━━",
+  `<b>Why trust OGMP MM</b>`,
+  RULER_HTML,
   "",
-  "What: one place for the whole deal.",
-  "Safe: Deal Protection (escrow + Delivery Vault + optional Case Review).",
-  "Next: start a deal and keep everything inside this bot.",
+  "<b>What</b>",
+  "One guided flow for both sides — fewer hand‑wavy DMs, clearer checkpoints.",
   "",
-  `• ${COMMUNITY_TRUST_LINE}`,
-  "• Payment sits in escrow before the Delivery Vault unlocks",
-  "• Timeline + evidence for Case Review if needed",
+  "<b>Safe</b>",
+  "Escrow + Delivery Vault + optional Case Review. Keep every step inside this bot.",
   "",
-  "Always trade in the deal room. Never pay outside OGMP MM.",
+  "<b>Highlights</b>",
+  `• <i>${COMMUNITY_TRUST_LINE}</i>`,
+  "• Payment stays in escrow before the vault unlocks",
+  "• Timeline + evidence if Case Review opens",
   "",
-  TRUST_OPS_FOOTER,
+  "<i>Never pay outside the address this bot shows for your deal.</i>",
+  footerHtml(),
 ].join("\n");
 
 export const HOW_IT_WORKS_PAGE = [
-  "━━━━━━━━━━━━━━━━━━",
-  "How OGMP MM Works",
-  "━━━━━━━━━━━━━━━━━━",
+  `<b>How OGMP MM works</b>`,
+  RULER_HTML,
   "",
-  "What happens (simple):",
-  "1. Seller → Delivery Vault (locked)",
-  "2. Buyer → pay into escrow (Deal Protection)",
+  "<b>Flow</b>",
+  "1. Seller fills the <b>Delivery Vault</b> (locked)",
+  "2. Buyer pays into <b>escrow</b> (Deal Protection)",
   "3. Payment confirms → vault unlocks",
-  "4. Buyer Review → you confirm",
-  "5. Release Request → seller gets paid",
+  "4. <b>Buyer Review</b> — inspect, then confirm",
+  "5. <b>Release Request</b> — seller receives payout per rules",
   "",
-  "Safe: nothing leaves escrow until the right step.",
-  "Next: Create Deal or Join Deal.",
+  "<b>Safe</b>",
+  "Nothing leaves escrow until the right step.",
   "",
-  TRUST_OPS_FOOTER,
+  "<b>Next</b>",
+  "Create a deal or join with an invite.",
+  footerHtml(),
 ].join("\n");
 
 export const SAFETY_RULES_PAGE = [
-  "━━━━━━━━━━━━━━━━━━",
-  "OGMP MM — Safety Rules",
-  "━━━━━━━━━━━━━━━━━━",
+  `<b>Safety rules</b>`,
+  RULER_HTML,
   "",
-  "What: rules that keep Deal Protection real.",
-  "Safe: stay in-bot; escrow + Delivery Vault only.",
-  "Next: read once, then trade only inside the deal room.",
+  "<b>What</b>",
+  "Rules that keep Deal Protection meaningful.",
   "",
-  "• Never pay outside OGMP MM",
-  "• Check usernames; don’t trust screenshots alone",
-  "• Finish Buyer Review before confirming",
+  "<b>Do</b>",
+  "• Stay in‑bot for pay, files, and decisions",
+  "• Verify usernames; screenshots can lie",
+  "• Finish Buyer Review before you confirm",
   "• Use Case Review + evidence if something is wrong",
-  "• Illegal or fraudulent deals are not allowed",
   "",
-  TRUST_OPS_FOOTER,
+  "<b>Do not</b>",
+  "• Illegal or fraudulent trades",
+  "• “Side deals” outside the bot flow",
+  footerHtml(),
 ].join("\n");
 
 export function supportPageText(supportUsername: string | undefined): string {
-  const handle = supportUsername?.trim().replace(/^@+/, "") || "your_support_handle";
+  const handle = escapeTelegramHtml(supportUsername?.trim().replace(/^@+/, "") || "your_support_handle");
   return [
-    "━━━━━━━━━━━━━━━━━━",
-    "OGMP MM — Support",
-    "━━━━━━━━━━━━━━━━━━",
+    `<b>Support</b>`,
+    RULER_HTML,
     "",
-    "What: help for questions vs. deal problems.",
-    "Safe: deal money/files stay under Deal Protection in-bot.",
-    "Next: deal issue → Open Case; general → /support format in this bot.",
+    "<b>What</b>",
+    "Help for general questions vs. in‑deal problems.",
     "",
-    `Official support: @${handle}`,
+    "<b>Deal problem?</b>",
+    "Open <b>Case Review</b> from the deal card (main bot) — do not post secrets here.",
     "",
-    "Only trust admins listed inside this bot.",
+    "<b>Official contact</b>",
+    `<a href="https://t.me/${handle}">@${handle}</a>`,
     "",
-    TRUST_OPS_FOOTER,
+    "<i>Only trust admins listed inside this bot.</i>",
+    footerHtml(),
   ].join("\n");
 }
 
 export const REPORT_BOT_HOME_PAGE = [
-  "━━━━━━━━━━━━━━━━━━",
-  "OGMP MM REPORT — Case Review",
-  "━━━━━━━━━━━━━━━━━━",
+  `<b>OGMP MM REPORT</b> · <i>Case Review</i>`,
+  RULER_HTML,
   "",
-  "What: open or add to a Case Review for a deal.",
-  "Safe: your escrow deal stays linked — don’t move payment outside OGMP MM.",
-  "Next: start from the main bot deal card, then follow prompts here.",
+  "<b>What</b>",
+  "Open or add evidence to a Case Review tied to your escrow deal.",
   "",
-  "Clear screenshots speed Case Review.",
+  "<b>Safe</b>",
+  "Keep payment and files inside OGMP MM — never “verify” by sending funds elsewhere.",
   "",
-  TRUST_OPS_FOOTER,
+  "<b>Next</b>",
+  "Start from the <b>main bot</b> deal card → Open Case, then continue here.",
+  "",
+  "<i>Clear screenshots speed up review.</i>",
+  footerHtml(),
 ].join("\n");
 
+/** Plain preamble still used inside legacy plain delivery blocks; prefer HTML builders in delivery.service. */
 export const DEAL_PROTECTION_BEFORE_PAY = [
   "━━━━━━━━━━━━━━━━━━",
   "OGMP MM — Deal Protection",
   "━━━━━━━━━━━━━━━━━━",
   "",
-  "What: you’re paying escrow to unlock the Delivery Vault.",
+  "What: you are paying escrow to unlock the Delivery Vault.",
   "Safe: funds are not released to the seller until Buyer Review + Release Request (or Case Review if needed).",
-  "Next: send only the right coin/network to the address on the next screen.",
+  "Next: send only the right coin and network to the address on the next screen.",
   "",
-  "Never pay outside this deal room.",
+  "Never pay outside this deal.",
   "",
   TRUST_OPS_FOOTER,
 ].join("\n");
