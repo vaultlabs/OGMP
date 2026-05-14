@@ -32,12 +32,12 @@ export function startNotificationWorker(): Worker | null {
             kb.row();
           }
           await api.sendMessage(data.chatId, data.text, {
-            parse_mode: data.parseMode ?? "Markdown",
+            ...(data.parseMode ? { parse_mode: data.parseMode } : {}),
             reply_markup: kb,
           });
         } else {
           await api.sendMessage(data.chatId, data.text, {
-            parse_mode: data.parseMode ?? "Markdown",
+            ...(data.parseMode ? { parse_mode: data.parseMode } : {}),
           });
         }
         return;

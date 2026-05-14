@@ -73,7 +73,6 @@ export async function sendBuyerDeliveryBundleToChat(params: {
     kb.row();
   }
   await api.sendMessage(chatId, buyerReviewFollowupText(deal.dealCode), {
-    parse_mode: "Markdown",
     reply_markup: kb,
   });
 

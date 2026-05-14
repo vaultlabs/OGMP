@@ -141,7 +141,11 @@ export async function submitReportAndFreezeDeal(reportId: string): Promise<void>
     const line = `⚖ A *report* was filed on deal \`${d.dealCode}\` (${report.reportCode}). The deal is *frozen* pending admin review.`;
     for (const u of [d.buyer, d.seller]) {
       if (!u) continue;
-      await enqueueDealParticipantNotify({ targetTelegramId: u.telegramId, text: line });
+      await enqueueDealParticipantNotify({
+        targetTelegramId: u.telegramId,
+        text: line,
+        parseMode: "Markdown",
+      });
     }
   }
 }

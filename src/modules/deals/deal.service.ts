@@ -453,7 +453,7 @@ export async function openDispute(openerId: string, dealId: string): Promise<voi
     if (u) {
       await enqueueDealParticipantNotify({
         targetTelegramId: u.telegramId,
-        text: `⚖ A dispute was opened on deal \`${deal.dealCode}\`.`,
+        text: `⚖ A dispute was opened on deal ${deal.dealCode}.`,
       });
     }
   }

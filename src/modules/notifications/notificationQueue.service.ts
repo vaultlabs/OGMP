@@ -47,6 +47,7 @@ export type BuyerDeliveryJob = {
 export async function enqueueDealParticipantNotify(params: {
   targetTelegramId: bigint;
   text: string;
+  parseMode?: "Markdown" | "HTML";
   buttons?: { text: string; cb: string }[][];
 }): Promise<void> {
   try {
@@ -54,6 +55,7 @@ export async function enqueueDealParticipantNotify(params: {
       await enqueueDmWithButtons({
         chatId: params.targetTelegramId.toString(),
         text: params.text,
+        ...(params.parseMode ? { parseMode: params.parseMode } : {}),
         buttons: params.buttons,
       });
       return;
@@ -61,7 +63,7 @@ export async function enqueueDealParticipantNotify(params: {
     const job: DmJob = {
       chatId: params.targetTelegramId.toString(),
       text: params.text,
-      parseMode: "Markdown",
+      ...(params.parseMode ? { parseMode: params.parseMode } : {}),
     };
     await getNotificationQueue().add("dm", job);
   } catch (e) {
@@ -79,7 +81,7 @@ export async function enqueueDmWithButtons(params: {
     await getNotificationQueue().add("dm", {
       chatId: params.chatId,
       text: params.text,
-      parseMode: params.parseMode ?? "Markdown",
+      ...(params.parseMode ? { parseMode: params.parseMode } : {}),
       buttons: params.buttons,
     } satisfies DmJob);
   } catch (e) {

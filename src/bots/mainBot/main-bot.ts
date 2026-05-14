@@ -37,7 +37,7 @@ import { getActiveDealRoom } from "../../modules/dealMessages/deal-room-session.
 import { listDealMessages } from "../../modules/dealMessages/dealMessage.service.js";
 import { createReportSession } from "../../modules/reports/report-session.service.js";
 import { assertCanOpenNewReport, findSubmittedReviewReportForDeal } from "../../modules/reports/report.service.js";
-import { TERMS_TEXT, WELCOME, SAFETY_FOOTER_PLAIN } from "./messages.js";
+import { TERMS_TEXT, WELCOME } from "./messages.js";
 import {
   acceptTerms,
   buyerConfirmRelease,
@@ -73,6 +73,7 @@ import { applyReview } from "../../services/reputation.service.js";
 import { reviewSchema } from "../../modules/deals/deal.validation.js";
 import type { CreateDealInput } from "../../modules/deals/deal.service.js";
 import { userFacingDealStatus } from "../../modules/deals/user-facing-status.js";
+import { escapeTelegramHtml } from "../../utils/telegram-html.js";
 import {
   createDealSuccessKeyboard,
   joinSuccessKeyboard,
@@ -108,13 +109,14 @@ function fmtUserLine(u: { telegramId: bigint; username: string | null; firstName
   return `${u.firstName ?? "User"} (${un}, id ${u.telegramId.toString()})`;
 }
 
-/** Plain text only — safe for Telegram without parse_mode (no Markdown entity errors). */
+/** HTML for Telegram <code>parse_mode: "HTML"</code> — user/deal text is escaped so entity errors cannot occur. */
 async function fmtDealCard(dealId: string): Promise<string> {
+  const e = escapeTelegramHtml;
   const d = await prisma.deal.findUnique({
     where: { id: dealId },
     include: { buyer: true, seller: true, activeReport: true },
   });
-  if (!d) return "Deal not found.";
+  if (!d) return e("Deal not found.");
   const buyer = d.buyer ? fmtUserLine(d.buyer) : "(pending)";
   const seller = d.seller ? fmtUserLine(d.seller) : "(pending)";
   const [lockedCount, msgCount, lastEv, pay] = await Promise.all([
@@ -137,36 +139,39 @@ async function fmtDealCard(dealId: string): Promise<string> {
         ? "Payment Confirmed"
         : "—";
   const termsPreview = `${d.dealTerms.slice(0, 300)}${d.dealTerms.length > 300 ? "…" : ""}`;
-  const reportLine = d.activeReport
-    ? `Report: ${d.activeReport.reportCode} (${d.activeReport.status})`
-    : "Report: none active";
-  return [
-    `━━━━━━━━━━━━━━━━━━`,
-    `OGMP MM — Deal`,
-    `━━━━━━━━━━━━━━━━━━`,
+  const lines: string[] = [
+    "━━━━━━━━━━━━━━━━━━",
+    "OGMP MM — Deal",
+    "━━━━━━━━━━━━━━━━━━",
     "",
-    `Deal: ${d.dealCode}`,
-    `Status: ${displayStatus}${d.frozen ? " (frozen)" : ""}`,
-    `Internal status: ${d.status}`,
-    `Buyer: ${buyer}`,
-    `Seller: ${seller}`,
-    `Amount: ${d.amount.toString()} ${d.currency} (${d.network})`,
-    `Fee: ${d.feeAmount.toString()} (${d.feePayer})`,
-    `Payment: ${pay ? pay.status : "—"}`,
-    `Delivery: ${delivery}`,
-    reportLine,
-    `Files submitted: ${msgCount}`,
+    `<b>Deal</b>: ${e(d.dealCode)}`,
+    `<b>Status</b>: ${e(displayStatus)}${d.frozen ? " (frozen)" : ""}`,
+    `<b>Internal status</b>: ${e(d.status)}`,
+    `<b>Buyer</b>: ${e(buyer)}`,
+    `<b>Seller</b>: ${e(seller)}`,
+    `<b>Amount</b>: ${e(d.amount.toString())} ${e(d.currency)} (${e(d.network)})`,
+    `<b>Fee</b>: ${e(d.feeAmount.toString())} (${e(String(d.feePayer))})`,
+    `<b>Payment</b>: ${pay ? e(pay.status) : "—"}`,
+    `<b>Delivery</b>: ${e(delivery)}`,
+    d.activeReport
+      ? `<b>Report</b>: ${e(d.activeReport.reportCode)} (${e(d.activeReport.status)})`
+      : "<b>Report</b>: none active",
+    `<b>Files submitted</b>: ${String(msgCount)}`,
     "Folders: send .zip / .rar / .7z or one file per message (no folder upload).",
-    `Last activity: ${d.lastActivityAt.toISOString().slice(0, 19)}Z`,
-    `Created: ${d.createdAt.toISOString().slice(0, 10)}`,
-    `Terms: ${termsPreview}`,
-    lastEv ? `Latest event: ${lastEv.eventType}` : "",
-    d.paymentAddress && d.status !== "pending_acceptance"
-      ? `\nPayment address:\n${d.paymentAddress}\nExact amount: ${d.amount.toString()} ${d.currency} on ${d.network}${SAFETY_FOOTER_PLAIN}`
-      : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
+    `<b>Last activity</b>: ${e(d.lastActivityAt.toISOString().slice(0, 19))}Z`,
+    `<b>Created</b>: ${e(d.createdAt.toISOString().slice(0, 10))}`,
+    `<b>Terms</b>:<br/>${e(termsPreview).replace(/\n/g, "<br/>")}`,
+  ];
+  if (lastEv) lines.push(`<b>Latest event</b>: ${e(lastEv.eventType)}`);
+  if (d.paymentAddress && d.status !== "pending_acceptance") {
+    lines.push(
+      "",
+      `<b>Payment address</b>:<br/><code>${e(d.paymentAddress)}</code>`,
+      `<b>Exact amount</b>: ${e(d.amount.toString())} ${e(d.currency)} on ${e(d.network)}`,
+      `<i>${e("Never send crypto outside the address shown by this bot. Wrong network can mean total loss.")}</i>`,
+    );
+  }
+  return lines.join("<br/>");
 }
 
 export function createMainBot(): Bot<Context> {
@@ -230,7 +235,7 @@ export function createMainBot(): Bot<Context> {
       try {
         const deal = await joinDealByToken(user, joinTok);
         await ctx.reply(`Joined deal ${deal.dealCode}.`);
-        await ctx.reply(await fmtDealCard(deal.id));
+        await ctx.reply(await fmtDealCard(deal.id), { parse_mode: "HTML" });
         await ctx.reply("Next: both sides accept terms.", {
           reply_markup: joinSuccessKeyboard(deal.dealCode),
         });
@@ -481,7 +486,7 @@ export function createMainBot(): Bot<Context> {
     kb.row().text("Upload / Deal room", `dr:enter:${deal.dealCode}`).row();
     kb.text("Timeline", `d:tl:${deal.dealCode}`).text("Delivery log", `d:pr:${deal.dealCode}`).row();
     kb.text("Report deal", `d:rp:${deal.dealCode}`);
-    await ctx.reply(text + hint, { reply_markup: kb });
+    await ctx.reply(text + hint.replace(/\n/g, "<br/>"), { parse_mode: "HTML", reply_markup: kb });
   });
 
   bot.callbackQuery(/^d:tl:(.+)$/, async (ctx) => {
@@ -673,7 +678,7 @@ export function createMainBot(): Bot<Context> {
     try {
       const updated = await acceptTerms(u.id, deal.id);
       await ctx.answerCallbackQuery({ text: "Accepted" });
-      await ctx.reply(await fmtDealCard(updated.id));
+      await ctx.reply(await fmtDealCard(updated.id), { parse_mode: "HTML" });
       if (updated.status === "pending_acceptance") {
         await notifyCounterpartyAfterTermsAccept(updated.id, u.id);
       } else if (updated.status === "waiting_payment" && updated.paymentAddress) {
@@ -695,7 +700,7 @@ export function createMainBot(): Bot<Context> {
     try {
       const d = await markDelivered(u.id, deal.id);
       await ctx.answerCallbackQuery({ text: "Marked delivered" });
-      await ctx.reply(await fmtDealCard(d.id));
+      await ctx.reply(await fmtDealCard(d.id), { parse_mode: "HTML" });
       const ns = nextStepForActorReply(d, u.id);
       if (ns) await ctx.reply(ns.text, { reply_markup: ns.kb });
     } catch (e) {
@@ -712,7 +717,7 @@ export function createMainBot(): Bot<Context> {
     try {
       const d = await buyerConfirmRelease(u.id, deal.id);
       await ctx.answerCallbackQuery({ text: "Processed" });
-      await ctx.reply(await fmtDealCard(d.id));
+      await ctx.reply(await fmtDealCard(d.id), { parse_mode: "HTML" });
       const ns = nextStepForActorReply(d, u.id);
       if (ns) await ctx.reply(ns.text, { reply_markup: ns.kb });
     } catch (e) {
@@ -958,7 +963,7 @@ export function createMainBot(): Bot<Context> {
     try {
       const deal = await joinDealByToken(user, token);
       await ctx.reply(`Joined deal ${deal.dealCode}.`);
-      await ctx.reply(await fmtDealCard(deal.id));
+      await ctx.reply(await fmtDealCard(deal.id), { parse_mode: "HTML" });
       await ctx.reply("Next: both sides accept terms.", {
         reply_markup: joinSuccessKeyboard(deal.dealCode),
       });
@@ -1171,7 +1176,7 @@ export function createMainBot(): Bot<Context> {
       const link = me ? `https://t.me/${me}?start=join_${deal.inviteToken}` : `Invite token:\n${deal.inviteToken}`;
       await ctx.reply(`Deal ${deal.dealCode} is ready.\nSend this invite to your counterparty:`);
       await ctx.reply(link);
-      await ctx.reply(await fmtDealCard(deal.id));
+      await ctx.reply(await fmtDealCard(deal.id), { parse_mode: "HTML" });
       await ctx.reply("Next: they join, then both sides accept terms.", {
         reply_markup: createDealSuccessKeyboard(deal.dealCode),
       });

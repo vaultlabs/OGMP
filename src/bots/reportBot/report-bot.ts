@@ -489,7 +489,11 @@ export function createReportBot(): Bot<Context> {
     const line = `⚖ Admin requested *more proof* on deal \`${rep.deal.dealCode}\` (report \`${rep.reportCode}\`). Use **Report deal** in the main bot to open OGMP MM REPORT and finish with /append_done after uploads.`;
     for (const u of [rep.deal.buyer, rep.deal.seller]) {
       if (!u) continue;
-      await enqueueDealParticipantNotify({ targetTelegramId: u.telegramId, text: line });
+      await enqueueDealParticipantNotify({
+        targetTelegramId: u.telegramId,
+        text: line,
+        parseMode: "Markdown",
+      });
     }
     await ctx.answerCallbackQuery({ text: "Parties notified" });
     await ctx.reply("Report set to waiting_for_buyer; buyer and seller were notified.");

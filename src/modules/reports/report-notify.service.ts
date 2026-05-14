@@ -1,12 +1,13 @@
 import { Api, InlineKeyboard } from "grammy";
 import { getAdminTelegramIds, getMainBotToken, getReportBotToken, loadConfig } from "../../config/index.js";
 import { logger } from "../../utils/logger.js";
+import { escapeTelegramMarkdownLegacy } from "../../utils/telegram-html.js";
 import { loadReportForAdmin } from "./report.service.js";
 
 function fmtParty(u: { telegramId: bigint; username: string | null; firstName: string | null } | null): string {
-  if (!u) return "_none_";
-  const un = u.username ? `@${u.username}` : "no @";
-  return `${u.firstName ?? "User"} (${un}, id \`${u.telegramId.toString()}\`)`;
+  if (!u) return "\\_none\\_";
+  const un = u.username ? `@${escapeTelegramMarkdownLegacy(u.username)}` : "no @";
+  return `${escapeTelegramMarkdownLegacy(u.firstName ?? "User")} (${un}, id \`${u.telegramId.toString()}\`)`;
 }
 
 function buildAdminReportActionKeyboard(rep: { id: string }, dealCode: string): InlineKeyboard {
@@ -38,14 +39,17 @@ export async function notifyAdminsReportSubmitted(reportId: string): Promise<voi
   if (!rep) return;
   const api = new Api(getReportBotToken() ?? getMainBotToken());
   const kb = buildAdminReportActionKeyboard(rep, rep.deal.dealCode);
+  const summary = escapeTelegramMarkdownLegacy(
+    `${rep.description.slice(0, 400)}${rep.description.length > 400 ? "…" : ""}`,
+  );
   const text = [
     "🚨 *New report submitted*",
     `Report: \`${rep.reportCode}\` · id \`${rep.id}\``,
     `Deal: \`${rep.deal.dealCode}\` · status \`${rep.deal.status}\``,
-    `Reporter TG: \`${rep.reporter.telegramId}\` @${rep.reporter.username ?? "n/a"}`,
+    `Reporter TG: \`${rep.reporter.telegramId}\` @${escapeTelegramMarkdownLegacy(rep.reporter.username ?? "n/a")}`,
     `Role: ${rep.reporterRole}`,
-    `Category: ${rep.category}`,
-    `Summary: ${rep.description.slice(0, 400)}${rep.description.length > 400 ? "…" : ""}`,
+    `Category: ${escapeTelegramMarkdownLegacy(rep.category)}`,
+    `Summary: ${summary}`,
     `Amount: *${rep.deal.amount.toString()} ${rep.deal.currency}* · network *${rep.deal.network}*`,
     `Buyer: ${fmtParty(rep.deal.buyer)}`,
     `Seller: ${fmtParty(rep.deal.seller)}`,
