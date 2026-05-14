@@ -427,24 +427,39 @@ export async function markDelivered(sellerId: string, dealId: string): Promise<D
 }
 
 export async function buyerConfirmRelease(buyerId: string, dealId: string): Promise<Deal> {
-  const deal = await prisma.deal.findUnique({
-    where: { id: dealId },
-    include: { buyer: true, seller: true },
-  });
+  const deal = await prisma.deal.findUnique({ where: { id: dealId } });
   if (!deal) throw new NotFoundError("Deal not found");
-  assertNotFrozen(deal);
-  if (deal.buyerId !== buyerId) throw new ForbiddenError("Only the buyer can confirm release");
-  if (deal.status !== "item_delivered") throw new StateMachineError("Invalid state for release confirm");
-  if (!deal.sellerPayoutAddress?.trim()) {
-    throw new StateMachineError(
-      "Seller payout wallet is missing. Ask the seller to set a payout address before you confirm release.",
-    );
+  const lockKey = `lock:deal:${dealId}:buyer_confirm_release`;
+  const token = randomBytes(8).toString("hex");
+  if (!(await acquireLock(lockKey, 10000, token))) {
+    throw new ConflictError("Please wait and try again");
   }
-  if ((await getRequirePayoutDoubleConfirm()) && !deal.sellerPayoutConfirmedAt) {
-    throw new StateMachineError(
-      "Seller must complete payout wallet checks on the deal card before you can confirm release.",
-    );
+  try {
+    const fresh = await prisma.deal.findUnique({
+      where: { id: dealId },
+      include: { buyer: true, seller: true },
+    });
+    if (!fresh) throw new NotFoundError("Deal not found");
+    assertNotFrozen(fresh);
+    if (fresh.buyerId !== buyerId) throw new ForbiddenError("Only the buyer can confirm release");
+    if (fresh.status !== "item_delivered") throw new StateMachineError("Invalid state for release confirm");
+    if (!fresh.sellerPayoutAddress?.trim()) {
+      throw new StateMachineError(
+        "Seller payout wallet is missing. Ask the seller to set a payout address before you confirm release.",
+      );
+    }
+    if ((await getRequirePayoutDoubleConfirm()) && !fresh.sellerPayoutConfirmedAt) {
+      throw new StateMachineError(
+        "Seller must complete payout wallet checks on the deal card before you can confirm release.",
+      );
+    }
+    return await runBuyerConfirmReleaseLocked(buyerId, dealId, fresh);
+  } finally {
+    await releaseLock(lockKey, token);
   }
+}
+
+async function runBuyerConfirmReleaseLocked(buyerId: string, dealId: string, deal: Deal & { buyer: User | null; seller: User | null }): Promise<Deal> {
   const suspiciousHold =
     hasActiveSuspiciousFlags(deal.buyer?.suspiciousFlags) ||
     hasActiveSuspiciousFlags(deal.seller?.suspiciousFlags);
@@ -452,7 +467,12 @@ export async function buyerConfirmRelease(buyerId: string, dealId: string): Prom
   if (auto) {
     await transitionDealStatus(dealId, "item_delivered", "buyer_confirmed");
     await transitionDealStatus(dealId, "buyer_confirmed", "released", { releasedAt: new Date() });
-    await writeAuditLog({ eventType: "funds_released", userId: buyerId, dealId, metadata: { mode: "auto" } });
+    await writeAuditLog({
+      eventType: "funds_released",
+      userId: buyerId,
+      dealId,
+      metadata: { mode: "auto", fundingTxHash: deal.txHash ?? null },
+    });
     await appendDealTimelineEvent({
       dealId,
       actorId: buyerId,
@@ -488,7 +508,12 @@ export async function buyerConfirmRelease(buyerId: string, dealId: string): Prom
   }
   await transitionDealStatus(dealId, "item_delivered", "buyer_confirmed");
   await transitionDealStatus(dealId, "buyer_confirmed", "release_requested");
-  await writeAuditLog({ eventType: "release_requested", userId: buyerId, dealId });
+  await writeAuditLog({
+    eventType: "release_requested",
+    userId: buyerId,
+    dealId,
+    metadata: { fundingTxHash: deal.txHash ?? null },
+  });
   await appendDealTimelineEvent({
     dealId,
     actorId: buyerId,
@@ -537,7 +562,14 @@ export async function openDispute(openerId: string, dealId: string): Promise<voi
     });
     await tx.deal.update({
       where: { id: dealId, version: deal.version },
-      data: { status: "disputed", disputedAt: new Date(), version: { increment: 1 } },
+      data: {
+        status: "disputed",
+        disputedAt: new Date(),
+        frozen: true,
+        frozenAt: new Date(),
+        frozenReason: "Dispute opened — case hold pending admin",
+        version: { increment: 1 },
+      },
     });
   });
   await writeAuditLog({ eventType: "dispute_opened", userId: openerId, dealId });

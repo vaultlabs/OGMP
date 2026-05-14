@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
 import { logAdminAction } from "./admin.repository.js";
 import { writeAuditLog } from "../../services/audit.service.js";
-import { ForbiddenError, NotFoundError, StateMachineError } from "../../utils/errors.js";
+import { ForbiddenError, NotFoundError, StateMachineError, ValidationError } from "../../utils/errors.js";
 import { getPaymentProvider } from "../../payments/index.js";
 import { isAdminTelegramId } from "../../config/index.js";
 import { applyDealReleasedStats } from "../../services/reputation.service.js";
@@ -49,6 +49,15 @@ export async function adminForceRelease(dealId: string, adminTelegramId: bigint)
   if ((await getRequirePayoutDoubleConfirm()) && !deal.sellerPayoutConfirmedAt) {
     throw new StateMachineError("Seller payout wallet must be double-confirmed (deal card) before release.");
   }
+  const openPayout = await prisma.payout.findFirst({
+    where: {
+      dealId,
+      status: { in: ["pending", "processing"] },
+    },
+  });
+  if (openPayout) {
+    throw new StateMachineError("A payout is already queued for this deal. Update that payout record before forcing another release.");
+  }
   await prisma.deal.update({
     where: { id: dealId, version: deal.version },
     data: {
@@ -73,6 +82,7 @@ export async function adminForceRelease(dealId: string, adminTelegramId: bigint)
         toAddress: deal.sellerPayoutAddress,
         status: "pending",
         providerRef: `${provider.name}:admin_release`,
+        adminNote: `Admin force release (telegram ${adminTelegramId}). Set tx hash when payout is sent.`,
       },
     });
   }
@@ -273,6 +283,17 @@ export async function adminUpdateManualPayout(params: {
     include: { seller: true },
   });
   const notify = params.status === "completed";
+  const nextTx = params.txHash !== undefined ? params.txHash : p.txHash;
+  const nextNote = params.adminNote !== undefined ? params.adminNote : p.adminNote;
+  if (params.status === "completed") {
+    const hasTx = Boolean(nextTx?.trim());
+    const hasNote = Boolean(nextNote?.trim());
+    if (!hasTx && !hasNote) {
+      throw new ValidationError(
+        "Marking a payout completed requires a non-empty transaction hash or admin note (on-chain id or ops explanation).",
+      );
+    }
+  }
   await prisma.payout.update({
     where: { id: p.id },
     data: {

@@ -1,6 +1,7 @@
 import type { User } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
 import { appendSuspiciousFlag } from "../../services/suspicion-flags.service.js";
+import { logAdminAction } from "../admin/admin.repository.js";
 
 export async function upsertTelegramUser(input: {
   telegramId: bigint;
@@ -59,16 +60,31 @@ export async function markUserGatewayAccess(input: {
   });
 }
 
-export async function banUserByTelegramId(telegramId: bigint, reason: string): Promise<void> {
+export async function banUserByTelegramId(
+  telegramId: bigint,
+  reason: string,
+  adminTelegramId: bigint,
+): Promise<void> {
   await prisma.user.updateMany({
     where: { telegramId },
     data: { banned: true, bannedReason: reason },
   });
+  await logAdminAction({
+    adminTelegramId,
+    action: "user_ban",
+    targetTelegramId: telegramId,
+    metadata: { reason },
+  });
 }
 
-export async function unbanUserByTelegramId(telegramId: bigint): Promise<void> {
+export async function unbanUserByTelegramId(telegramId: bigint, adminTelegramId: bigint): Promise<void> {
   await prisma.user.updateMany({
     where: { telegramId },
     data: { banned: false, bannedReason: null },
+  });
+  await logAdminAction({
+    adminTelegramId,
+    action: "user_unban",
+    targetTelegramId: telegramId,
   });
 }

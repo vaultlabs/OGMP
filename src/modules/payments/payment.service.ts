@@ -1,4 +1,5 @@
 import type { PaymentRecordStatus } from "@prisma/client";
+import { randomBytes, createHash } from "node:crypto";
 import { prisma } from "../../db/prisma.js";
 import { getPaymentProvider } from "../../payments/index.js";
 import { writeAuditLog } from "../../services/audit.service.js";
@@ -6,7 +7,7 @@ import { transitionDealStatus } from "../deals/deal.service.js";
 import { appendDealTimelineEvent } from "../dealTimeline/timeline.service.js";
 import { assertValidDealTransition } from "../../services/escrow-state-machine.js";
 import { logger } from "../../utils/logger.js";
-import { createHash } from "node:crypto";
+import { acquireLock, releaseLock } from "../../utils/redis.js";
 
 export function isPrismaUniqueConstraintError(e: unknown): boolean {
   return typeof e === "object" && e !== null && "code" in e && (e as { code: string }).code === "P2002";
@@ -50,6 +51,20 @@ async function loadDeal(dealId: string) {
 }
 
 export async function applyPaymentSyncForDeal(dealId: string): Promise<void> {
+  const lockKey = `lock:deal:${dealId}:payment_sync`;
+  const token = randomBytes(8).toString("hex");
+  if (!(await acquireLock(lockKey, 20000, token))) {
+    logger.warn("payment_sync_lock_busy", { dealId });
+    return;
+  }
+  try {
+    await applyPaymentSyncForDealLocked(dealId);
+  } finally {
+    await releaseLock(lockKey, token);
+  }
+}
+
+async function applyPaymentSyncForDealLocked(dealId: string): Promise<void> {
   const payment = await prisma.payment.findFirst({
     where: { dealId },
     orderBy: { createdAt: "desc" },

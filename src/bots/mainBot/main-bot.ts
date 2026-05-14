@@ -84,6 +84,7 @@ import {
   adminUpdateManualPayout,
   exportDealsCsv,
 } from "../../modules/admin/admin.service.js";
+import { logAdminAction } from "../../modules/admin/admin.repository.js";
 import { applyReview, appendReviewOptionalText } from "../../services/reputation.service.js";
 import { formatReceiptHtml, rateButtons } from "../../services/deal-completion-notify.service.js";
 import { buildDealCaseExportText } from "../../services/deal-case-export.service.js";
@@ -1409,6 +1410,10 @@ export function createMainBot(): Bot<Context> {
   bot.callbackQuery(/^a:gw:clearchat$/, async (ctx) => {
     if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
     await deleteGatewaySetting(GATEWAY_SETTING_KEYS.CHAT_ID);
+    await logAdminAction({
+      adminTelegramId: BigInt(ctx.from.id),
+      action: "gateway_clear_chat_id",
+    });
     await ctx.answerCallbackQuery({ text: "Cleared" });
     await ctx.reply("Gateway chat id override removed (falls back to env if set).");
   });
@@ -1418,6 +1423,11 @@ export function createMainBot(): Bot<Context> {
     const snap = await getGatewayAdminSnapshot();
     const next = !snap.effective.requireGatewayJoin;
     await setGatewaySetting(GATEWAY_SETTING_KEYS.REQUIRE_OVERRIDE, next ? "true" : "false");
+    await logAdminAction({
+      adminTelegramId: BigInt(ctx.from.id),
+      action: "gateway_require_toggle",
+      metadata: { require: next },
+    });
     await ctx.answerCallbackQuery({ text: next ? "ON" : "OFF" });
     await ctx.reply(`Gateway requirement is now *${next ? "enabled" : "disabled"}* (DB override).`, {
       parse_mode: "Markdown",
@@ -1432,6 +1442,7 @@ export function createMainBot(): Bot<Context> {
       deleteGatewaySetting(GATEWAY_SETTING_KEYS.USERNAME),
       deleteGatewaySetting(GATEWAY_SETTING_KEYS.CHAT_ID),
     ]);
+    await logAdminAction({ adminTelegramId: BigInt(ctx.from.id), action: "gateway_clear_all_overrides" });
     await ctx.answerCallbackQuery({ text: "Cleared" });
     await ctx.reply("All gateway DB overrides removed. Env values apply.");
   });
@@ -1746,6 +1757,17 @@ export function createMainBot(): Bot<Context> {
       }
       await setGatewaySetting(GATEWAY_SETTING_KEYS.JOIN_URL, raw);
       await clearAdminGatewayExpect(BigInt(ctx.from.id));
+      let joinHost: string | null = null;
+      try {
+        joinHost = new URL(raw).host;
+      } catch {
+        joinHost = null;
+      }
+      await logAdminAction({
+        adminTelegramId: BigInt(ctx.from.id),
+        action: "gateway_join_url_set",
+        metadata: { host: joinHost },
+      });
       await ctx.reply(`Saved join URL:\n\`${raw}\``, { parse_mode: "Markdown" });
       return;
     }
@@ -1753,6 +1775,11 @@ export function createMainBot(): Bot<Context> {
       const label = raw.startsWith("@") ? raw : `@${raw.replace(/^@+/, "")}`;
       await setGatewaySetting(GATEWAY_SETTING_KEYS.USERNAME, label);
       await clearAdminGatewayExpect(BigInt(ctx.from.id));
+      await logAdminAction({
+        adminTelegramId: BigInt(ctx.from.id),
+        action: "gateway_username_label_set",
+        metadata: { label },
+      });
       await ctx.reply(`Saved gateway label: \`${label}\``, { parse_mode: "Markdown" });
       return;
     }
@@ -1763,6 +1790,11 @@ export function createMainBot(): Bot<Context> {
       }
       await setGatewaySetting(GATEWAY_SETTING_KEYS.CHAT_ID, raw);
       await clearAdminGatewayExpect(BigInt(ctx.from.id));
+      await logAdminAction({
+        adminTelegramId: BigInt(ctx.from.id),
+        action: "gateway_chat_id_set",
+        metadata: { chatId: raw },
+      });
       await ctx.reply(`Saved gateway chat id: \`${raw}\``, { parse_mode: "Markdown" });
       return;
     }
@@ -1961,7 +1993,7 @@ export function createMainBot(): Bot<Context> {
     }
     try {
       const id = BigInt(tid);
-      await banUserByTelegramId(id, reason);
+      await banUserByTelegramId(id, reason, BigInt(ctx.from.id));
       await ctx.reply("✅ User banned.");
     } catch {
       await ctx.reply("Invalid id");
@@ -1978,7 +2010,7 @@ export function createMainBot(): Bot<Context> {
     }
     try {
       const id = BigInt(tid);
-      await unbanUserByTelegramId(id);
+      await unbanUserByTelegramId(id, BigInt(ctx.from.id));
       await ctx.reply("✅ User unbanned.");
     } catch {
       await ctx.reply("Invalid id");
@@ -1988,12 +2020,14 @@ export function createMainBot(): Bot<Context> {
   bot.command("admin_maint_on", async (ctx) => {
     if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
     await setMaintenanceEnabled(true);
+    await logAdminAction({ adminTelegramId: BigInt(ctx.from.id), action: "maintenance_on" });
     await ctx.reply("Maintenance mode ON — users cannot start new deals.");
   });
 
   bot.command("admin_maint_off", async (ctx) => {
     if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
     await setMaintenanceEnabled(false);
+    await logAdminAction({ adminTelegramId: BigInt(ctx.from.id), action: "maintenance_off" });
     await ctx.reply("Maintenance mode OFF.");
   });
 
@@ -2005,6 +2039,11 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     await setMaintenanceMessage(text);
+    await logAdminAction({
+      adminTelegramId: BigInt(ctx.from.id),
+      action: "maintenance_message_set",
+      metadata: { len: text.length },
+    });
     await ctx.reply("Maintenance message saved.");
   });
 
@@ -2024,6 +2063,11 @@ export function createMainBot(): Bot<Context> {
     try {
       const obj = JSON.parse(raw) as DealLimitsJson;
       await setDealLimitsJson(obj);
+      await logAdminAction({
+        adminTelegramId: BigInt(ctx.from.id),
+        action: "deal_limits_set",
+        metadata: { keys: Object.keys(obj) },
+      });
       await ctx.reply("Deal limits updated.");
     } catch {
       await ctx.reply("Invalid JSON.");
@@ -2068,6 +2112,11 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     const txt = await buildDealCaseExportText(code);
+    await logAdminAction({
+      adminTelegramId: BigInt(ctx.from.id),
+      action: "deal_case_export",
+      metadata: { dealCode: code, bytes: txt.length },
+    });
     await ctx.replyWithDocument(new InputFile(Buffer.from(txt, "utf8"), `case-${code}.txt`));
   });
 
@@ -2110,6 +2159,11 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     await setOfficialSupportUsernames(users);
+    await logAdminAction({
+      adminTelegramId: BigInt(ctx.from.id),
+      action: "official_support_handles_set",
+      metadata: { count: users.length },
+    });
     await ctx.reply("Official support usernames saved.");
   });
 
@@ -2121,6 +2175,11 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     await setRequirePayoutDoubleConfirm(v === "on");
+    await logAdminAction({
+      adminTelegramId: BigInt(ctx.from.id),
+      action: "payout_double_confirm_set",
+      metadata: { value: v },
+    });
     await ctx.reply(`Double payout confirm: ${v}`);
   });
 
@@ -2132,6 +2191,11 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     await setHighValueThresholdUsd(v);
+    await logAdminAction({
+      adminTelegramId: BigInt(ctx.from.id),
+      action: "high_value_threshold_set",
+      metadata: { threshold: v },
+    });
     await ctx.reply("High value threshold (USD notional) saved.");
   });
 
@@ -2143,6 +2207,11 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     await setRequireHighValueApproval(v === "on");
+    await logAdminAction({
+      adminTelegramId: BigInt(ctx.from.id),
+      action: "high_value_require_approval_set",
+      metadata: { value: v },
+    });
     await ctx.reply(`High value admin approval: ${v}`);
   });
 

@@ -121,9 +121,7 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
       }
     }
     const sellerLocked =
-      deal.sellerId === u.id &&
-      hasFile &&
-      (deal.status === "waiting_payment" || deal.status === "payment_detected");
+      deal.sellerId === u.id && hasFile && !deal.fundedAt;
     try {
       await saveDealRoomMessage({
         dealId,

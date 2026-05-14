@@ -6,6 +6,7 @@ import { writeAuditLog } from "../../services/audit.service.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../../utils/errors.js";
 import { assertFileAllowed } from "../../utils/file-safety.js";
 import { enqueueAdminReportSubmitted, enqueueDealParticipantNotify } from "../notifications/notificationQueue.service.js";
+import { logAdminAction } from "../admin/admin.repository.js";
 
 /** Submitted / in-review only — drafts do not block the main bot "Report deal" flow. */
 const SUBMITTED_REVIEW_REPORT_STATUSES: ReportStatus[] = [
@@ -100,10 +101,6 @@ export async function submitReportAndFreezeDeal(reportId: string): Promise<void>
   if (!report) throw new NotFoundError("Report not found");
   if (report.status !== "draft") throw new ValidationError("Report already submitted.");
   await prisma.$transaction(async (tx) => {
-    await tx.report.update({
-      where: { id: reportId },
-      data: { status: "submitted", updatedAt: new Date() },
-    });
     await tx.deal.update({
       where: { id: report.dealId },
       data: {
@@ -113,6 +110,10 @@ export async function submitReportAndFreezeDeal(reportId: string): Promise<void>
         activeReportId: reportId,
         version: { increment: 1 },
       },
+    });
+    await tx.report.update({
+      where: { id: reportId },
+      data: { status: "submitted", updatedAt: new Date() },
     });
   });
   await appendDealTimelineEvent({
@@ -200,6 +201,17 @@ export async function adminResolveReport(params: {
         },
       });
     }
+  });
+  await logAdminAction({
+    adminTelegramId: params.adminTelegramId,
+    action: "report_resolve",
+    dealId: report.dealId,
+    metadata: {
+      reportId: params.reportId,
+      newStatus: params.newStatus,
+      dealAction: params.dealAction ?? null,
+      noteLen: params.note.length,
+    },
   });
 }
 

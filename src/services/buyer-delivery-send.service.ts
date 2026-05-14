@@ -16,6 +16,7 @@ export async function sendBuyerDeliveryBundleToChat(params: {
   const deal = await prisma.deal.findUnique({ where: { id: params.dealId } });
   if (!deal) return { sent: 0, skipped: true };
   if (deal.deliveryFilesBundleSentAt) return { sent: 0, skipped: true };
+  if (!deal.fundedAt) return { sent: 0, skipped: true };
   if (deal.status !== "funded" && deal.status !== "item_delivered") {
     return { sent: 0, skipped: true };
   }

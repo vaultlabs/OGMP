@@ -45,6 +45,19 @@ export function assertFileAllowed(params: {
     throw new ValidationError("Executable or script uploads are not accepted.");
   }
 
+  /** Telegram / clients vary MIME for .zip / .rar; do not rely on octet-stream + extension alone. */
+  const wellKnownSafeMimes = new Set([
+    "text/plain",
+    "application/pdf",
+    "application/zip",
+    "application/x-zip-compressed",
+    "application/x-rar-compressed",
+    "application/vnd.rar",
+  ]);
+  if (wellKnownSafeMimes.has(mime)) {
+    return;
+  }
+
   if (mime === "application/octet-stream") {
     if (!ext || !OCTET_STREAM_SAFE_EXTENSIONS.has(ext)) {
       throw new ValidationError(
