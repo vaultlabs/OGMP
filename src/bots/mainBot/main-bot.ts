@@ -1,6 +1,7 @@
 import { Bot, Context, InlineKeyboard, InputFile } from "grammy";
 import { loadConfig, isAdminTelegramId, getMainBotToken, getReportBotToken } from "../../config/index.js";
 import { logger } from "../../utils/logger.js";
+import { replyTextForCaughtError } from "../../utils/user-facing-errors.js";
 import { redisIncrWithTtl } from "../../utils/redis.js";
 import { prisma } from "../../db/prisma.js";
 import type { ParticipantRole, User } from "@prisma/client";
@@ -233,7 +234,17 @@ export function createMainBot(): Bot<Context> {
       update_id: ctx.update.update_id,
       err: String(err.error),
     });
-    void err.ctx.reply("Something went wrong. Our team has been notified.").catch(() => {});
+    void err.ctx
+      .reply(
+        [
+          "Something went wrong while handling that.",
+          "",
+          "What to try: open My deals from the menu, or send /start. If it keeps happening, wait a few minutes and try again.",
+          "",
+          "Do not paste API keys, bot tokens, wallet seeds, or payment provider secrets in this chat.",
+        ].join("\n"),
+      )
+      .catch(() => {});
   });
 
   bot.use(async (ctx, next) => {
@@ -1361,7 +1372,7 @@ export function createMainBot(): Bot<Context> {
       const d = await cancelDeal(u.id, deal.id);
       await ctx.reply(`Deal ${d.dealCode} → ${d.status}`);
     } catch (e) {
-      await ctx.reply(String((e as Error).message));
+      await ctx.reply(replyTextForCaughtError(e));
     }
   });
 
@@ -1702,7 +1713,7 @@ export function createMainBot(): Bot<Context> {
       await adminForceRelease(deal.id, BigInt(ctx.from.id));
       await ctx.reply("✅ Force release executed.");
     } catch (e) {
-      await ctx.reply(String((e as Error).message));
+      await ctx.reply(replyTextForCaughtError(e));
     }
   });
 
@@ -1722,7 +1733,7 @@ export function createMainBot(): Bot<Context> {
       await adminForceRefund(deal.id, BigInt(ctx.from.id));
       await ctx.reply("✅ Force refund executed.");
     } catch (e) {
-      await ctx.reply(String((e as Error).message));
+      await ctx.reply(replyTextForCaughtError(e));
     }
   });
 
@@ -1742,7 +1753,7 @@ export function createMainBot(): Bot<Context> {
       await adminCancelDeal(deal.id, BigInt(ctx.from.id));
       await ctx.reply("✅ Admin-cancelled.");
     } catch (e) {
-      await ctx.reply(String((e as Error).message));
+      await ctx.reply(replyTextForCaughtError(e));
     }
   });
 

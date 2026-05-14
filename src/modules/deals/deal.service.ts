@@ -11,6 +11,7 @@ import { writeAuditLog } from "../../services/audit.service.js";
 import { appendDealTimelineEvent } from "../dealTimeline/timeline.service.js";
 import { enqueueDealParticipantNotify } from "../notifications/notificationQueue.service.js";
 import { ConflictError, ForbiddenError, NotFoundError, StateMachineError } from "../../utils/errors.js";
+import { paymentAddressSetupFailedUserMessage } from "../../utils/user-facing-errors.js";
 import { getPaymentProvider } from "../../payments/index.js";
 import { loadConfig } from "../../config/index.js";
 import { isAutoReleaseEnabled } from "../../services/bot-settings.service.js";
@@ -212,6 +213,32 @@ export async function acceptTerms(userId: string, dealId: string): Promise<Deal>
             help:
               "This message only appears on outdated builds. Run: git pull origin main && npm run dev. After restart, logs should include payment_provider_selected with impl nowpayments_api_v1_2026_02 before any deal uses NOWPayments.",
           });
+        }
+        try {
+          const d = await prisma.deal.findUnique({
+            where: { id: dealId },
+            include: { buyer: true, seller: true },
+          });
+          if (d) {
+            const text = paymentAddressSetupFailedUserMessage(d.dealCode);
+            const buttons = [[{ text: "View deal", cb: `d:v:${d.dealCode}` }]];
+            if (d.buyer) {
+              await enqueueDealParticipantNotify({
+                targetTelegramId: d.buyer.telegramId,
+                text,
+                buttons,
+              });
+            }
+            if (d.seller) {
+              await enqueueDealParticipantNotify({
+                targetTelegramId: d.seller.telegramId,
+                text,
+                buttons,
+              });
+            }
+          }
+        } catch (notifyErr) {
+          logger.error("payment_instruction_notify_failed", { dealId, err: String(notifyErr) });
         }
         return updated;
       }

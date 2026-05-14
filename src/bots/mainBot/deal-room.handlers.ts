@@ -14,6 +14,7 @@ import {
   formatUploadContinuationPlain,
 } from "../../utils/upload-guidance.js";
 import { assertFileAllowed } from "../../utils/file-safety.js";
+import { replyTextForCaughtError } from "../../utils/user-facing-errors.js";
 import {
   notifyBuyerPaymentRequired,
   sellerFileSecuredKeyboard,
@@ -87,7 +88,7 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
         ["Message saved to this deal's Delivery log (Deal room).", "", formatDealRoomTextSavedPlain()].join("\n"),
       );
     } catch (e) {
-      await ctx.reply(String((e as Error).message));
+      await ctx.reply(replyTextForCaughtError(e));
     }
   });
 
@@ -146,7 +147,7 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
         ].join("\n"),
       );
     } catch (e) {
-      await ctx.reply(String((e as Error).message));
+      await ctx.reply(replyTextForCaughtError(e));
     }
   };
 
@@ -160,7 +161,7 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
         fileSize: p?.file_size,
       });
     } catch (e) {
-      await ctx.reply(String((e as Error).message));
+      await ctx.reply(replyTextForCaughtError(e));
       return;
     }
     await saveMedia(
@@ -189,7 +190,7 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
         fileSize: doc.file_size,
       });
     } catch (e) {
-      await ctx.reply(String((e as Error).message));
+      await ctx.reply(replyTextForCaughtError(e));
       return;
     }
     await saveMedia(
@@ -216,7 +217,7 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
         fileSize: v.file_size,
       });
     } catch (e) {
-      await ctx.reply(String((e as Error).message));
+      await ctx.reply(replyTextForCaughtError(e));
       return;
     }
     await saveMedia(
@@ -243,7 +244,7 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
         fileSize: a.file_size,
       });
     } catch (e) {
-      await ctx.reply(String((e as Error).message));
+      await ctx.reply(replyTextForCaughtError(e));
       return;
     }
     await saveMedia(
@@ -270,7 +271,7 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
         fileSize: v.file_size,
       });
     } catch (e) {
-      await ctx.reply(String((e as Error).message));
+      await ctx.reply(replyTextForCaughtError(e));
       return;
     }
     await saveMedia(ctx, "voice", v.file_id, v.file_unique_id, "voice.ogg", "audio/ogg", v.file_size, undefined, "[voice]");
@@ -287,7 +288,7 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
         fileSize: a.file_size,
       });
     } catch (e) {
-      await ctx.reply(String((e as Error).message));
+      await ctx.reply(replyTextForCaughtError(e));
       return;
     }
     await saveMedia(

@@ -18,6 +18,7 @@ import {
   adminResolveReport,
 } from "../../modules/reports/report.service.js";
 import { assertFileAllowed } from "../../utils/file-safety.js";
+import { replyTextForCaughtError } from "../../utils/user-facing-errors.js";
 import {
   TELEGRAM_FOLDER_UPLOAD_EXPLANATION_PLAIN,
   formatUploadContinuationPlain,
@@ -95,6 +96,20 @@ export function createReportBot(): Bot<Context> {
 
   bot.catch((err) => {
     logger.error("report_bot_error", { err: String(err.error) });
+    const ctx = err.ctx;
+    if (ctx?.reply) {
+      void ctx
+        .reply(
+          [
+            "Something went wrong in the REPORT bot.",
+            "",
+            "What to try: send /start again, or open your case from the main escrow bot. If it repeats, wait a few minutes.",
+            "",
+            "Never paste API keys, tokens, or wallet seeds here.",
+          ].join("\n"),
+        )
+        .catch(() => {});
+    }
   });
 
   bot.command("start", async (ctx) => {
@@ -164,7 +179,7 @@ export function createReportBot(): Bot<Context> {
           .text("Seller", "rp:role:seller"),
       });
     } catch (e) {
-      await ctx.reply(`❌ ${String((e as Error).message)}`);
+      await ctx.reply(replyTextForCaughtError(e));
     }
   });
 
@@ -324,7 +339,7 @@ export function createReportBot(): Bot<Context> {
         fileSize: p?.file_size,
       });
     } catch (e) {
-      await ctx.reply(String((e as Error).message));
+      await ctx.reply(replyTextForCaughtError(e));
       return;
     }
     await saveEvidence(ctx, "photo", {
@@ -349,7 +364,7 @@ export function createReportBot(): Bot<Context> {
         fileSize: doc.file_size,
       });
     } catch (e) {
-      await ctx.reply(String((e as Error).message));
+      await ctx.reply(replyTextForCaughtError(e));
       return;
     }
     await saveEvidence(ctx, "document", {
@@ -373,7 +388,7 @@ export function createReportBot(): Bot<Context> {
         fileSize: v.file_size,
       });
     } catch (e) {
-      await ctx.reply(String((e as Error).message));
+      await ctx.reply(replyTextForCaughtError(e));
       return;
     }
     await saveEvidence(ctx, "video", {
@@ -400,7 +415,7 @@ export function createReportBot(): Bot<Context> {
         "✅ Report submitted. The deal is frozen and admins have been notified. Do not send funds outside official instructions.",
       );
     } catch (e) {
-      await ctx.reply(`❌ ${String((e as Error).message)}`);
+      await ctx.reply(replyTextForCaughtError(e));
     }
   });
 
@@ -545,7 +560,8 @@ export function createReportBot(): Bot<Context> {
       await ctx.answerCallbackQuery({ text: "Closed" });
       await ctx.reply("Report closed and deal unfrozen (if it was frozen).");
     } catch (e) {
-      await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
+      logger.error("report_bot_admin_close_failed", { err: String(e) });
+      await ctx.answerCallbackQuery({ text: "Could not complete that. Try again or send /start.", show_alert: true });
     }
   });
 
