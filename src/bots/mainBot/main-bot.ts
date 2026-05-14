@@ -29,7 +29,10 @@ import {
   setAdminGatewayExpect,
 } from "../../modules/gateway/admin-gateway-prompt.service.js";
 import { registerDealRoomHandlers } from "./deal-room.handlers.js";
-import { getActiveDealRoom } from "../../modules/dealMessages/deal-room-session.service.js";
+import {
+  clearActiveDealRoom,
+  getActiveDealRoom,
+} from "../../modules/dealMessages/deal-room-session.service.js";
 import { listDealMessages } from "../../modules/dealMessages/dealMessage.service.js";
 import { createReportSession } from "../../modules/reports/report-session.service.js";
 import { assertCanOpenNewReport, findSubmittedReviewReportForDeal } from "../../modules/reports/report.service.js";
@@ -413,6 +416,7 @@ export function createMainBot(): Bot<Context> {
       await ctx.answerCallbackQuery({ text: "Accept terms first", show_alert: true });
       return;
     }
+    await clearActiveDealRoom(BigInt(ctx.from.id));
     await setCreateWizard(BigInt(ctx.from.id), { step: "role" });
     await ctx.answerCallbackQuery();
     await ctx.reply("Select your role in this deal:", {
@@ -425,6 +429,7 @@ export function createMainBot(): Bot<Context> {
   bot.callbackQuery(/^w:role:(buyer|seller)$/, async (ctx) => {
     if (!ctx.from || !ctx.match) return;
     const role = ctx.match[1] as ParticipantRole;
+    await clearActiveDealRoom(BigInt(ctx.from.id));
     await setCreateWizard(BigInt(ctx.from.id), { step: "title", creatorRole: role });
     await ctx.answerCallbackQuery();
     await ctx.reply("Enter a short *deal title* (plain text).", { parse_mode: "Markdown" });
@@ -1274,6 +1279,7 @@ export function createMainBot(): Bot<Context> {
       await ctx.reply("Please /start and accept terms first.");
       return;
     }
+    await clearActiveDealRoom(BigInt(ctx.from.id));
     await setCreateWizard(BigInt(ctx.from.id), { step: "role" });
     await ctx.reply("Select your role:", {
       reply_markup: new InlineKeyboard()

@@ -80,6 +80,17 @@ export async function clearCreateWizard(telegramId: bigint): Promise<void> {
   await r.del(wizardKey(telegramId));
 }
 
+/** When true, plain-text messages should go to the create wizard, not Deal room. */
+export function createWizardExpectsPlainText(w: CreateDealWizard | null): boolean {
+  if (!w) return false;
+  return (
+    w.step === "title" ||
+    w.step === "description" ||
+    w.step === "party_terms_text" ||
+    w.step === "amount"
+  );
+}
+
 export function toCreateDealInput(
   base: Extract<CreateDealWizard, { step: "fee_payer" }>,
   feePayer: CreateDealInput["feePayer"],

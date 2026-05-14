@@ -4,6 +4,7 @@ import {
   getActiveDealRoom,
   setActiveDealRoom,
 } from "../../modules/dealMessages/deal-room-session.service.js";
+import { createWizardExpectsPlainText, getCreateWizard } from "./create-deal-wizard.js";
 import { saveDealRoomMessage } from "../../modules/dealMessages/dealMessage.service.js";
 import { findUserByTelegramId } from "../../modules/users/user.service.js";
 import { prisma } from "../../db/prisma.js";
@@ -59,7 +60,12 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
 
   bot.on("message:text", async (ctx, next) => {
     if (!ctx.from || ctx.message.text?.startsWith("/")) return next();
-    const dealId = await getActiveDealRoom(BigInt(ctx.from.id));
+    const tid = BigInt(ctx.from.id);
+    const w = await getCreateWizard(tid);
+    if (createWizardExpectsPlainText(w)) {
+      return next();
+    }
+    const dealId = await getActiveDealRoom(tid);
     if (!dealId) return next();
     const u = await findUserByTelegramId(BigInt(ctx.from.id));
     if (!u) return;
