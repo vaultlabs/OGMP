@@ -26,6 +26,17 @@ Use this before pointing real users or funds at the system.
 - [ ] Run `npm run db:setup` or seed supported coins if this is a fresh environment.
 - [ ] Confirm `initDefaultSettings()` ran once (app startup) so default bot settings rows exist.
 
+## Launch hardening (verify in staging)
+
+These behaviors are enforced in code; confirm them once before production traffic.
+
+- [ ] **Buyer file gate**: until the deal has a payment-confirmed timestamp (`fundedAt`), the buyer must not see Telegram `file_id` values in the deal room / proof log (seller pre-fund uploads stay payment-locked).
+- [ ] **Delivery DM bundle** only sends after `fundedAt` is set (same bar as on-chain confirmation).
+- [ ] **Concurrent payment sync / double buyer confirm**: rapid webhook or double-tap does not double-advance the deal (per-deal Redis locks).
+- [ ] **Disputes and reports** put the deal on admin hold (`frozen`) immediately when opened/submitted.
+- [ ] **Admin payout completed** requires a transaction hash or admin note in `/admin_payout_update`.
+- [ ] **Admin broadcasts** and **`/setbadge`** write rows to `admin_action_logs` when executed.
+
 ## Functional smoke tests
 
 - [ ] `/start` as a normal user: gateway (if enabled), terms, main menu.

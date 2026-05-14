@@ -2366,6 +2366,17 @@ export function createMainBot(): Bot<Context> {
     await ctx.answerCallbackQuery({ text: "Sending…" });
     await clearBroadcastDraft(tid);
     const r = await runBroadcastFanout(ctx.api, d);
+    await logAdminAction({
+      adminTelegramId: tid,
+      action: "broadcast_sent",
+      metadata: {
+        sent: r.sent,
+        errors: r.errors,
+        photo: Boolean(d.photoFileId),
+        textLen: d.text.length,
+        hasButton: Boolean(d.button?.url),
+      },
+    });
     await ctx.reply(`Broadcast finished.\nSent: ${r.sent}\nErrors: ${r.errors}`);
   });
 
@@ -2443,6 +2454,11 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     await prisma.user.update({ where: { id: user.id }, data: { profileBadge: badge } });
+    await logAdminAction({
+      adminTelegramId: BigInt(ctx.from.id),
+      action: "user_profile_badge_set",
+      metadata: { targetUserId: user.id, badge },
+    });
     await ctx.reply(`Badge updated: ${badge}`);
   });
 
