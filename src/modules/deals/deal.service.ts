@@ -9,6 +9,7 @@ import { applyDealDisputedStats, applyDealReleasedStats } from "../../services/r
 import { writeAuditLog } from "../../services/audit.service.js";
 import { appendDealTimelineEvent } from "../dealTimeline/timeline.service.js";
 import { enqueueDealParticipantNotify } from "../notifications/notificationQueue.service.js";
+import { escapeTelegramLegacyMarkdown } from "../../utils/telegram-escape.js";
 import { ConflictError, ForbiddenError, NotFoundError, StateMachineError } from "../../utils/errors.js";
 import { getPaymentProvider } from "../../payments/index.js";
 import { isAutoReleaseEnabled } from "../../services/bot-settings.service.js";
@@ -319,7 +320,7 @@ export async function markDelivered(sellerId: string, dealId: string): Promise<D
         text: [
           "OGMP MM — Seller marked delivered",
           "",
-          `Deal: *${deal.dealCode}*`,
+          `Deal: *${escapeTelegramLegacyMarkdown(deal.dealCode)}*`,
           "",
           "Next: review everything, then confirm release or open a dispute.",
         ].join("\n"),
@@ -374,7 +375,7 @@ export async function buyerConfirmRelease(buyerId: string, dealId: string): Prom
           text: [
             "OGMP MM — Funds released",
             "",
-            `Deal: *${deal.dealCode}*`,
+            `Deal: *${escapeTelegramLegacyMarkdown(deal.dealCode)}*`,
             "",
             "Buyer confirmed — escrow release completed (auto).",
           ].join("\n"),
@@ -407,7 +408,7 @@ export async function buyerConfirmRelease(buyerId: string, dealId: string): Prom
         text: [
           "OGMP MM — Buyer confirmed",
           "",
-          `Deal: *${deal.dealCode}*`,
+          `Deal: *${escapeTelegramLegacyMarkdown(deal.dealCode)}*`,
           "",
           "Release is pending admin approval.",
         ].join("\n"),

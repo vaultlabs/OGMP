@@ -2,6 +2,7 @@ import type { Deal } from "@prisma/client";
 import { InlineKeyboard } from "grammy";
 import { prisma } from "../../db/prisma.js";
 import { enqueueDmWithButtons } from "../notifications/notificationQueue.service.js";
+import { escapeTelegramLegacyMarkdown } from "../../utils/telegram-escape.js";
 
 const DIV = "━━━━━━━━━━━━━━━━━━";
 
@@ -129,7 +130,7 @@ export async function notifyCounterpartyAfterTermsAccept(
       "OGMP MM — Your turn",
       DIV,
       "",
-      `Deal: *${deal.dealCode}*`,
+      `Deal: *${escapeTelegramLegacyMarkdown(deal.dealCode)}*`,
       "",
       `The ${side.toLowerCase()} accepted the deal terms.`,
       "",
@@ -160,7 +161,7 @@ export async function notifyBothAfterPaymentLive(dealId: string): Promise<void> 
         "OGMP MM — Deal is live",
         DIV,
         "",
-        `Deal: *${deal.dealCode}*`,
+        `Deal: *${escapeTelegramLegacyMarkdown(deal.dealCode)}*`,
         "",
         "Next: upload your delivery in Deal room first. The buyer pays after your files are locked.",
       ].join("\n"),
@@ -181,7 +182,7 @@ export async function notifyBothAfterPaymentLive(dealId: string): Promise<void> 
         "OGMP MM — Deal is live",
         DIV,
         "",
-        `Deal: *${deal.dealCode}*`,
+        `Deal: *${escapeTelegramLegacyMarkdown(deal.dealCode)}*`,
         "",
         "Next: wait for the seller to upload and lock delivery. You’ll get a payment notice with the escrow address when it’s time to pay.",
       ].join("\n"),

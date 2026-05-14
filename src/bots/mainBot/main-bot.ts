@@ -73,6 +73,7 @@ import { applyReview } from "../../services/reputation.service.js";
 import { reviewSchema } from "../../modules/deals/deal.validation.js";
 import type { CreateDealInput } from "../../modules/deals/deal.service.js";
 import { userFacingDealStatus } from "../../modules/deals/user-facing-status.js";
+import { escapeTelegramLegacyMarkdown } from "../../utils/telegram-escape.js";
 import {
   createDealSuccessKeyboard,
   joinSuccessKeyboard,
@@ -104,8 +105,13 @@ function mainMenuKb(isAdmin: boolean): InlineKeyboard {
 }
 
 function fmtUser(u: { telegramId: bigint; username: string | null; firstName: string | null }): string {
-  const un = u.username ? `@${u.username}` : "no username";
-  return `${u.firstName ?? "User"} (${un}, id \`${u.telegramId.toString()}\`)`;
+  const fn = escapeTelegramLegacyMarkdown(u.firstName ?? "User");
+  const id = escapeTelegramLegacyMarkdown(u.telegramId.toString());
+  if (u.username) {
+    const un = escapeTelegramLegacyMarkdown(u.username);
+    return `${fn} (@${un}, id \`${id}\`)`;
+  }
+  return `${fn} (no username, id \`${id}\`)`;
 }
 
 async function fmtDealCard(dealId: string): Promise<string> {
@@ -125,42 +131,55 @@ async function fmtDealCard(dealId: string): Promise<string> {
     }),
     prisma.payment.findFirst({ where: { dealId }, orderBy: { createdAt: "desc" } }),
   ]);
-  const displayStatus = userFacingDealStatus(d, {
-    hasLockedDelivery: lockedCount > 0,
-    paymentStatus: pay?.status ?? null,
-  });
+  const displayStatus = escapeTelegramLegacyMarkdown(
+    userFacingDealStatus(d, {
+      hasLockedDelivery: lockedCount > 0,
+      paymentStatus: pay?.status ?? null,
+    }),
+  );
   const delivery =
     d.status === "item_delivered" || d.status === "buyer_confirmed" || d.status === "release_requested"
       ? "Buyer Reviewing / Release"
       : d.status === "funded"
         ? "Payment Confirmed"
         : "—";
+  const termsPreview = escapeTelegramLegacyMarkdown(
+    `${d.dealTerms.slice(0, 300)}${d.dealTerms.length > 300 ? "…" : ""}`,
+  );
   const reportLine = d.activeReport
-    ? `Report: \`${d.activeReport.reportCode}\` (${d.activeReport.status})`
+    ? `Report: \`${escapeTelegramLegacyMarkdown(d.activeReport.reportCode)}\` (${escapeTelegramLegacyMarkdown(d.activeReport.status)})`
     : "Report: _none active_";
+  const payStatusEsc = pay ? escapeTelegramLegacyMarkdown(pay.status) : "";
+  const lastEvEsc = lastEv ? escapeTelegramLegacyMarkdown(lastEv.eventType) : "";
+  const addrEsc = d.paymentAddress ? escapeTelegramLegacyMarkdown(d.paymentAddress) : "";
+  const amtEsc = escapeTelegramLegacyMarkdown(d.amount.toString());
+  const curEsc = escapeTelegramLegacyMarkdown(d.currency);
+  const netEsc = escapeTelegramLegacyMarkdown(d.network);
+  const dealCodeEsc = escapeTelegramLegacyMarkdown(d.dealCode);
+  const statusEsc = escapeTelegramLegacyMarkdown(d.status);
   return [
     `━━━━━━━━━━━━━━━━━━`,
     `OGMP MM — Deal`,
     `━━━━━━━━━━━━━━━━━━`,
     "",
-    `Deal: *${d.dealCode}*`,
+    `Deal: *${dealCodeEsc}*`,
     `Status: *${displayStatus}*${d.frozen ? " (frozen)" : ""}`,
-    `_Internal: \`${d.status}\`_`,
+    `_Internal: \`${statusEsc}\`_`,
     `Buyer: ${buyer}`,
     `Seller: ${seller}`,
-    `Amount: *${d.amount.toString()} ${d.currency}* (${d.network})`,
+    `Amount: *${amtEsc} ${curEsc}* (${netEsc})`,
     `Fee: ${d.feeAmount.toString()} (${d.feePayer})`,
-    `Payment: ${pay ? `\`${pay.status}\`` : "—"}`,
+    `Payment: ${pay ? `\`${payStatusEsc}\`` : "—"}`,
     `Delivery: ${delivery}`,
     reportLine,
     `Files submitted: ${msgCount}`,
     "Folders: send .zip / .rar / .7z or one file per message (no folder upload).",
     `Last activity: ${d.lastActivityAt.toISOString().slice(0, 19)}Z`,
     `Created: ${d.createdAt.toISOString().slice(0, 10)}`,
-    `Terms: ${d.dealTerms.slice(0, 300)}${d.dealTerms.length > 300 ? "…" : ""}`,
-    lastEv ? `Latest event: \`${lastEv.eventType}\`` : "",
+    `Terms: ${termsPreview}`,
+    lastEv ? `Latest event: \`${lastEvEsc}\`` : "",
     d.paymentAddress && d.status !== "pending_acceptance"
-      ? `\n*Payment address*\n\`${d.paymentAddress}\`\nExact amount: *${d.amount.toString()} ${d.currency}* on *${d.network}*${SAFETY_FOOTER}`
+      ? `\n*Payment address*\n\`${addrEsc}\`\nExact amount: *${amtEsc} ${curEsc}* on *${netEsc}*${SAFETY_FOOTER}`
       : "",
   ]
     .filter(Boolean)
@@ -227,7 +246,7 @@ export function createMainBot(): Bot<Context> {
       await clearPendingJoinInvite(tid);
       try {
         const deal = await joinDealByToken(user, joinTok);
-        await ctx.reply(`Joined deal *${deal.dealCode}*.`, { parse_mode: "Markdown" });
+        await ctx.reply(`Joined deal *${escapeTelegramLegacyMarkdown(deal.dealCode)}*.`, { parse_mode: "Markdown" });
         await ctx.reply(await fmtDealCard(deal.id), { parse_mode: "Markdown" });
         await ctx.reply("Next: both sides accept terms.", {
           reply_markup: joinSuccessKeyboard(deal.dealCode),
@@ -743,7 +762,9 @@ export function createMainBot(): Bot<Context> {
     try {
       const d = await cancelDeal(u.id, deal.id);
       await ctx.answerCallbackQuery({ text: "Cancelled" });
-      await ctx.reply(`Deal ${d.dealCode} is now *${d.status}*.`, { parse_mode: "Markdown" });
+      await ctx.reply(`Deal ${escapeTelegramLegacyMarkdown(d.dealCode)} is now *${escapeTelegramLegacyMarkdown(d.status)}*.`, {
+        parse_mode: "Markdown",
+      });
     } catch (e) {
       await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
     }
@@ -954,7 +975,7 @@ export function createMainBot(): Bot<Context> {
     }
     try {
       const deal = await joinDealByToken(user, token);
-      await ctx.reply(`Joined deal *${deal.dealCode}*.`, { parse_mode: "Markdown" });
+      await ctx.reply(`Joined deal *${escapeTelegramLegacyMarkdown(deal.dealCode)}*.`, { parse_mode: "Markdown" });
       await ctx.reply(await fmtDealCard(deal.id), { parse_mode: "Markdown" });
       await ctx.reply("Next: both sides accept terms.", {
         reply_markup: joinSuccessKeyboard(deal.dealCode),
@@ -1165,10 +1186,12 @@ export function createMainBot(): Bot<Context> {
       await ctx.answerCallbackQuery({ text: "Created" });
       const cfg = loadConfig();
       const me = cfg.BOT_PUBLIC_USERNAME ?? (await ctx.api.getMe()).username;
-      const link = me ? `https://t.me/${me}?start=join_${deal.inviteToken}` : `Invite token:\n\`${deal.inviteToken}\``;
-      await ctx.reply(`Deal *${deal.dealCode}* is ready.\nSend this invite to your counterparty:\n${link}`, {
-        parse_mode: "Markdown",
-      });
+      const link = me ? `https://t.me/${me}?start=join_${deal.inviteToken}` : `Invite token:\n${deal.inviteToken}`;
+      await ctx.reply(
+        `Deal *${escapeTelegramLegacyMarkdown(deal.dealCode)}* is ready.\nSend this invite to your counterparty:`,
+        { parse_mode: "Markdown" },
+      );
+      await ctx.reply(link);
       await ctx.reply(await fmtDealCard(deal.id), { parse_mode: "Markdown" });
       await ctx.reply("Next: they join, then both sides accept terms.", {
         reply_markup: createDealSuccessKeyboard(deal.dealCode),
