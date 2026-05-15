@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { ValidationError } from "./errors.js";
-import { paymentAddressSetupFailedUserMessage, replyTextForCaughtError } from "./user-facing-errors.js";
+import {
+  paymentAddressSetupFailedBuyerMessage,
+  paymentAddressSetupFailedSellerMessage,
+  replyTextForCaughtError,
+} from "./user-facing-errors.js";
 
 describe("user-facing-errors", () => {
   it("passes through AppError messages", () => {
@@ -11,9 +15,11 @@ describe("user-facing-errors", () => {
     expect(replyTextForCaughtError(new Error("secret internal DATABASE_URL=..."))).not.toContain("DATABASE_URL");
   });
 
-  it("paymentAddressSetupFailedUserMessage includes deal code only", () => {
-    const t = paymentAddressSetupFailedUserMessage("OGMP-ABC12");
-    expect(t).toContain("OGMP-ABC12");
-    expect(t).toContain("/support");
+  it("payment setup failed messages are short and include deal code", () => {
+    const code = "OGMP-ABC12";
+    expect(paymentAddressSetupFailedBuyerMessage(code)).toContain(code);
+    expect(paymentAddressSetupFailedBuyerMessage(code)).toContain("/support");
+    expect(paymentAddressSetupFailedSellerMessage(code)).toContain(code);
+    expect(paymentAddressSetupFailedBuyerMessage(code).split("\n").length).toBeLessThan(6);
   });
 });

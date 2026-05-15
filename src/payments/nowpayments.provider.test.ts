@@ -1,7 +1,13 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Deal } from "@prisma/client";
 import { resetConfigCacheForTests } from "../config/index.js";
-import { NowPaymentsProvider, sortJsonForNowPaymentsSignature } from "./nowpayments.provider.js";
+import {
+  NowPaymentsProvider,
+  isNowpaymentsEstimateConversionError,
+  nowpaymentsPriceAndPayForCreate,
+  sortJsonForNowPaymentsSignature,
+} from "./nowpayments.provider.js";
 
 function npEnv() {
   process.env.DATABASE_URL = "postgresql://ogmp:ogmp@127.0.0.1:5432/ogmp_mm?schema=public";
@@ -85,5 +91,53 @@ describe("NowPaymentsProvider", () => {
       pay_amount: 2,
     });
     expect(r.result.status).toBe("underpaid");
+  });
+
+  it("nowpaymentsPriceAndPayForCreate uses usd invoice for USDT → on-chain USDT slug", () => {
+    expect(
+      nowpaymentsPriceAndPayForCreate({
+        currency: "USDT",
+        network: "TRC20",
+        expectedAmount: "42.5",
+      }),
+    ).toEqual({ price_amount: 42.5, price_currency: "usd", pay_currency: "usdttrc20" });
+    expect(
+      nowpaymentsPriceAndPayForCreate({
+        currency: "usdt",
+        network: "ERC20",
+        expectedAmount: "10",
+      }),
+    ).toEqual({ price_amount: 10, price_currency: "usd", pay_currency: "usdterc20" });
+  });
+
+  it("nowpaymentsPriceAndPayForCreate uses usd invoice for USDC → on-chain USDC slug", () => {
+    expect(
+      nowpaymentsPriceAndPayForCreate({
+        currency: "USDC",
+        network: "MATIC",
+        expectedAmount: "1",
+      }),
+    ).toEqual({ price_amount: 1, price_currency: "usd", pay_currency: "usdcmatic" });
+  });
+
+  it("nowpaymentsPriceAndPayForCreate keeps crypto invoice for BTC", () => {
+    expect(
+      nowpaymentsPriceAndPayForCreate({
+        currency: "BTC",
+        network: "BTC",
+        expectedAmount: "0.01",
+      }),
+    ).toEqual({ price_amount: 0.01, price_currency: "btc", pay_currency: "btc" });
+  });
+
+  it("nowpaymentsPriceAndPayForCreate rejects non-positive amount", () => {
+    expect(() =>
+      nowpaymentsPriceAndPayForCreate({ currency: "USDT", network: "TRC20", expectedAmount: "0" }),
+    ).toThrow(/Invalid expected amount/);
+  });
+
+  it("isNowpaymentsEstimateConversionError matches NOWPayments estimate failures", () => {
+    expect(isNowpaymentsEstimateConversionError("Can not get estimate from USDT to USDTTRC20")).toBe(true);
+    expect(isNowpaymentsEstimateConversionError("random failure")).toBe(false);
   });
 });

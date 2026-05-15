@@ -104,6 +104,7 @@ import { escapeTelegramHtml } from "../../utils/telegram-html.js";
 import {
   createDealSuccessKeyboard,
   joinSuccessKeyboard,
+  nextStepAfterPaymentSetupFailed,
   nextStepForActorReply,
   notifyBothAfterPaymentLive,
   notifyCounterpartyAfterTermsAccept,
@@ -828,12 +829,15 @@ export function createMainBot(): Bot<Context> {
       const updated = await acceptTerms(u.id, deal.id);
       await ctx.answerCallbackQuery({ text: "Accepted" });
       await ctx.reply(await fmtDealCard(updated.id, u.id), { parse_mode: "HTML" });
+      const paySetupFailed = updated.status === "waiting_payment" && !updated.paymentAddress;
       if (updated.status === "pending_acceptance") {
         await notifyCounterpartyAfterTermsAccept(updated.id, u.id);
       } else if (updated.status === "waiting_payment" && updated.paymentAddress) {
         await notifyBothAfterPaymentLive(updated.id);
       }
-      const ns = nextStepForActorReply(updated, u.id);
+      const ns = paySetupFailed
+        ? nextStepAfterPaymentSetupFailed(updated, u.id)
+        : nextStepForActorReply(updated, u.id);
       if (ns) await ctx.reply(ns.text, { reply_markup: ns.kb });
     } catch (e) {
       await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });

@@ -5,7 +5,7 @@ import { MockPaymentProvider } from "./mock-payment.provider.js";
 import { NowPaymentsProvider } from "./nowpayments.provider.js";
 
 /** Bumped when NOWPayments integration changes — check startup logs if you still see old stub errors. */
-const NOWPAYMENTS_IMPL_TAG = "nowpayments_api_v1_2026_02";
+const NOWPAYMENTS_IMPL_TAG = "nowpayments_api_v1_2026_03";
 
 let loggedProviderSelection = false;
 

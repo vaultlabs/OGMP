@@ -51,7 +51,44 @@ function mapCurrencyNetworkToPayCurrency(currency: string, network: string): str
 }
 
 function priceCurrencyForDeal(currency: string): string {
-  return currency.trim().toLowerCase();
+  return currency.trim().toLowerCase().replace(/\s+/g, "");
+}
+
+/** True when NOWPayments failed its internal price_currency → pay_currency estimate (common for USDT↔USDTTRC20). */
+export function isNowpaymentsEstimateConversionError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("get estimate") ||
+    m.includes("cannot get estimate") ||
+    m.includes("can not get estimate") ||
+    (m.includes("estimate") && (m.includes("usdt") || m.includes("usdc")))
+  );
+}
+
+/**
+ * NOWPayments estimates price_currency → pay_currency. Invoicing in `usdt` while paying with
+ * `usdttrc20` / `usdterc20` hits "Can not get estimate from USDT to USDTTRC20" (HTTP 500).
+ * Use fiat `usd` for the invoice when the deal is USDT/USDC but settlement is an on-chain slug.
+ */
+export function nowpaymentsPriceAndPayForCreate(params: {
+  currency: string;
+  network: string;
+  expectedAmount: string;
+}): { price_amount: number; price_currency: string; pay_currency: string } {
+  const payCurrency = mapCurrencyNetworkToPayCurrency(params.currency, params.network);
+  const priceAmount = toNum(params.expectedAmount);
+  if (!(priceAmount > 0)) {
+    throw new Error("Invalid expected amount for NOWPayments payment");
+  }
+  const priceCurrency = priceCurrencyForDeal(params.currency);
+  const payLower = payCurrency.toLowerCase();
+  if (priceCurrency === "usdt" && payLower.startsWith("usdt")) {
+    return { price_amount: priceAmount, price_currency: "usd", pay_currency: payCurrency };
+  }
+  if (priceCurrency === "usdc" && payLower.startsWith("usdc")) {
+    return { price_amount: priceAmount, price_currency: "usd", pay_currency: payCurrency };
+  }
+  return { price_amount: priceAmount, price_currency: priceCurrency, pay_currency: payCurrency };
 }
 
 function extractTxHash(body: Record<string, unknown>): string | undefined {
@@ -188,71 +225,92 @@ export class NowPaymentsProvider implements PaymentProvider {
     network: string,
   ): Promise<PaymentAddressResult> {
     const { apiKey, publicBase } = this.requireKeys();
-    const payCurrency = mapCurrencyNetworkToPayCurrency(currency, network);
-    const priceCurrency = priceCurrencyForDeal(currency);
-    const priceAmount = toNum(expectedAmount);
-    if (!(priceAmount > 0)) {
-      throw new Error("Invalid expected amount for NOWPayments payment");
-    }
-    const orderId = `${this.name}:${deal.id}:${deal.version}`;
+    let pricing = nowpaymentsPriceAndPayForCreate({ currency, network, expectedAmount });
+    const orderBase = `${this.name}:${deal.id}:${deal.version}`;
+    let orderId = orderBase;
     const ipnUrl = `${publicBase}/webhooks/payments/${this.name}`;
     const url = `${this.apiBase()}/v1/payment`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "x-api-key": apiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        price_amount: priceAmount,
-        price_currency: priceCurrency,
-        pay_currency: payCurrency,
-        ipn_callback_url: ipnUrl,
-        order_id: orderId,
-        order_description: `OGMP ${deal.dealCode}`.slice(0, 200),
-      }),
-    });
-    const text = await res.text();
-    let data: Record<string, unknown>;
-    try {
-      data = JSON.parse(text) as Record<string, unknown>;
-    } catch {
-      logger.error("nowpayments_create_payment_bad_json", { status: res.status, text: text.slice(0, 500) });
-      throw new Error(`NOWPayments create payment: non-JSON response (${res.status})`);
-    }
-    if (!res.ok) {
+
+    for (let i = 0; i < 2; i++) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "x-api-key": apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          price_amount: pricing.price_amount,
+          price_currency: pricing.price_currency,
+          pay_currency: pricing.pay_currency,
+          ipn_callback_url: ipnUrl,
+          order_id: orderId,
+          order_description: `OGMP ${deal.dealCode}`.slice(0, 200),
+        }),
+      });
+      const text = await res.text();
+      let data: Record<string, unknown>;
+      try {
+        data = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        logger.error("nowpayments_create_payment_bad_json", { status: res.status, text: text.slice(0, 500) });
+        throw new Error(`NOWPayments create payment: non-JSON response (${res.status})`);
+      }
+
+      if (res.ok) {
+        const addr =
+          (typeof data.pay_address === "string" && data.pay_address) ||
+          (typeof data.payment_address === "string" && data.payment_address) ||
+          (typeof data.deposit_address === "string" && data.deposit_address);
+        if (!addr) {
+          logger.error("nowpayments_create_payment_no_address", { keys: Object.keys(data) });
+          throw new Error("NOWPayments create payment response missing pay address");
+        }
+        const paymentId = data.payment_id;
+        const ref = typeof paymentId === "string" || typeof paymentId === "number" ? String(paymentId) : undefined;
+        const reqConf = data.required_confirmations;
+        const requiredConfirmations =
+          typeof reqConf === "number" && Number.isFinite(reqConf) && reqConf > 0
+            ? Math.floor(reqConf)
+            : undefined;
+
+        return {
+          address: addr,
+          reference: ref,
+          providerRef: ref,
+          requiredConfirmations,
+        };
+      }
+
+      const msgRaw =
+        (typeof data.message === "string" && data.message) ||
+        (typeof data.error === "string" && data.error) ||
+        text.slice(0, 500);
       logger.error("nowpayments_create_payment_http_error", {
         status: res.status,
-        message: data.message ?? data.error ?? text.slice(0, 500),
+        message: msgRaw,
+        price_currency: pricing.price_currency,
+        pay_currency: pricing.pay_currency,
+        attempt: i + 1,
       });
-      throw new Error(
-        typeof data.message === "string"
-          ? `NOWPayments: ${data.message}`
-          : `NOWPayments create payment failed (${res.status})`,
-      );
-    }
-    const addr =
-      (typeof data.pay_address === "string" && data.pay_address) ||
-      (typeof data.payment_address === "string" && data.payment_address) ||
-      (typeof data.deposit_address === "string" && data.deposit_address);
-    if (!addr) {
-      logger.error("nowpayments_create_payment_no_address", { keys: Object.keys(data) });
-      throw new Error("NOWPayments create payment response missing pay address");
-    }
-    const paymentId = data.payment_id;
-    const ref = typeof paymentId === "string" || typeof paymentId === "number" ? String(paymentId) : undefined;
-    const reqConf = data.required_confirmations;
-    const requiredConfirmations =
-      typeof reqConf === "number" && Number.isFinite(reqConf) && reqConf > 0
-        ? Math.floor(reqConf)
-        : undefined;
 
-    return {
-      address: addr,
-      reference: ref,
-      providerRef: ref,
-      requiredConfirmations,
-    };
+      const retryUsd =
+        i === 0 &&
+        pricing.price_currency !== "usd" &&
+        isNowpaymentsEstimateConversionError(msgRaw);
+      if (retryUsd) {
+        logger.warn("nowpayments_create_payment_retry_usd_invoice", {
+          pay_currency: pricing.pay_currency,
+          firstError: msgRaw,
+        });
+        pricing = { ...pricing, price_currency: "usd" };
+        orderId = `${orderBase}:usd-retry`;
+        continue;
+      }
+
+      throw new Error(typeof data.message === "string" ? `NOWPayments: ${data.message}` : `NOWPayments create payment failed (${res.status})`);
+    }
+
+    throw new Error("NOWPayments create payment failed after retry");
   }
 
   async checkPaymentStatus(payment: Payment): Promise<PaymentStatusResult> {

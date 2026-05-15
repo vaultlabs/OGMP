@@ -97,6 +97,32 @@ export function nextStepForActorReply(
   }
 }
 
+/** After both accepted terms but payment address creation failed — one clear next step (not "wait for vault"). */
+export function nextStepAfterPaymentSetupFailed(
+  deal: Pick<Deal, "dealCode" | "buyerId" | "sellerId">,
+  actorUserId: string,
+): { text: string; kb: InlineKeyboard } {
+  const kb = new InlineKeyboard().text("View deal", `d:v:${deal.dealCode}`);
+  const isBuyer = deal.buyerId === actorUserId;
+  const isSeller = deal.sellerId === actorUserId;
+  if (isBuyer) {
+    return {
+      text: "What: escrow pay address did not issue yet.\nSafe: do not send crypto until the deal card shows a pay address.\nNext: wait one minute, then open View deal again. If it repeats: /support with your deal code only.",
+      kb,
+    };
+  }
+  if (isSeller) {
+    return {
+      text: "What: buyer pay address did not issue yet (payment setup on our side).\nSafe: do not ask the buyer to send crypto until a pay address appears on the deal card.\nNext: wait one minute, then View deal again. If it repeats: /support with your deal code only.",
+      kb,
+    };
+  }
+  return {
+    text: "What: payment setup is delayed.\nNext: wait one minute, then View deal, or /support with your deal code only.",
+    kb,
+  };
+}
+
 export function joinSuccessKeyboard(dealCode: string): InlineKeyboard {
   return new InlineKeyboard()
     .text("Accept terms", `d:a:${dealCode}`)

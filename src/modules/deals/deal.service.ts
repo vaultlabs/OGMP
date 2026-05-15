@@ -11,7 +11,10 @@ import { writeAuditLog } from "../../services/audit.service.js";
 import { appendDealTimelineEvent } from "../dealTimeline/timeline.service.js";
 import { enqueueDealParticipantNotify } from "../notifications/notificationQueue.service.js";
 import { ConflictError, ForbiddenError, NotFoundError, StateMachineError } from "../../utils/errors.js";
-import { paymentAddressSetupFailedUserMessage } from "../../utils/user-facing-errors.js";
+import {
+  paymentAddressSetupFailedBuyerMessage,
+  paymentAddressSetupFailedSellerMessage,
+} from "../../utils/user-facing-errors.js";
 import { getPaymentProvider } from "../../payments/index.js";
 import { loadConfig } from "../../config/index.js";
 import { isAutoReleaseEnabled } from "../../services/bot-settings.service.js";
@@ -211,7 +214,7 @@ export async function acceptTerms(userId: string, dealId: string): Promise<Deal>
         if (payCfg === "nowpayments" && errStr.includes("not implemented")) {
           logger.error("payment_instruction_stale_nowpayments_build", {
             help:
-              "This message only appears on outdated builds. Run: git pull origin main && npm run dev. After restart, logs should include payment_provider_selected with impl nowpayments_api_v1_2026_02 before any deal uses NOWPayments.",
+              "This message only appears on outdated builds. Run: git pull origin main && npm run dev. After restart, logs should include payment_provider_selected with impl nowpayments_api_v1_2026_03 before any deal uses NOWPayments.",
           });
         }
         try {
@@ -220,19 +223,18 @@ export async function acceptTerms(userId: string, dealId: string): Promise<Deal>
             include: { buyer: true, seller: true },
           });
           if (d) {
-            const text = paymentAddressSetupFailedUserMessage(d.dealCode);
             const buttons = [[{ text: "View deal", cb: `d:v:${d.dealCode}` }]];
-            if (d.buyer) {
+            if (d.buyer && d.buyer.id !== userId) {
               await enqueueDealParticipantNotify({
                 targetTelegramId: d.buyer.telegramId,
-                text,
+                text: paymentAddressSetupFailedBuyerMessage(d.dealCode),
                 buttons,
               });
             }
-            if (d.seller) {
+            if (d.seller && d.seller.id !== userId) {
               await enqueueDealParticipantNotify({
                 targetTelegramId: d.seller.telegramId,
-                text,
+                text: paymentAddressSetupFailedSellerMessage(d.dealCode),
                 buttons,
               });
             }

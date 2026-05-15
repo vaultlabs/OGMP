@@ -13,16 +13,12 @@ export function replyTextForCaughtError(e: unknown): string {
   return GENERIC_TRY_AGAIN;
 }
 
-/** When escrow payment address could not be created (server logs retain details). */
-export function paymentAddressSetupFailedUserMessage(dealCode: string): string {
-  return [
-    `Deal ${dealCode}: we could not finish payment setup yet (no pay address was issued).`,
-    "",
-    "What you can do:",
-    "• Wait one minute, open the deal from My deals, and check again.",
-    "• If you are still setting the deal up, follow the bot’s steps in order (terms, delivery lock for seller, then pay for buyer).",
-    "• If this keeps happening, use Request cancel on the deal card, or /support with this deal code only.",
-    "",
-    "Stay safe: do not send crypto until this bot shows a pay address on the deal screen. Never paste API keys, IPN secrets, or wallet seeds here.",
-  ].join("\n");
+/** Buyer DM when escrow payment address could not be created (one clear next step). */
+export function paymentAddressSetupFailedBuyerMessage(dealCode: string): string {
+  return `Deal ${dealCode}: pay address is not ready yet. Next: wait 1 minute → View deal again. Do not send crypto until the deal card shows the pay address. If it repeats: /support with this deal code only.`;
+}
+
+/** Seller DM when payment address creation failed (one clear next step). */
+export function paymentAddressSetupFailedSellerMessage(dealCode: string): string {
+  return `Deal ${dealCode}: buyer pay address did not issue yet (our side). Next: wait 1 minute → View deal. Do not ask the buyer to send crypto until a pay address appears on the deal card. If it repeats: /support with this deal code only.`;
 }
