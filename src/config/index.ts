@@ -7,6 +7,13 @@ function emptyToUndefinedUrl(v: unknown): unknown {
   return v;
 }
 
+/** Telegram @handle for t.me links: trim, strip leading @, empty → undefined. */
+function normalizeTelegramUsername(v: unknown): string | undefined {
+  if (typeof v !== "string") return undefined;
+  const t = v.trim().replace(/^@+/u, "");
+  return t === "" ? undefined : t;
+}
+
 const envSchema = z
   .object({
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -21,8 +28,8 @@ const envSchema = z
     ADMIN_IDS: z.string().default(""),
     ADMIN_TELEGRAM_IDS: z.string().default(""),
     WEBHOOK_SECRET: z.string().optional(),
-    BOT_PUBLIC_USERNAME: z.string().optional(),
-    REPORT_BOT_USERNAME: z.string().optional(),
+    BOT_PUBLIC_USERNAME: z.preprocess(normalizeTelegramUsername, z.string().optional()),
+    REPORT_BOT_USERNAME: z.preprocess(normalizeTelegramUsername, z.string().optional()),
     SERVER_PORT: z.coerce.number().default(8080),
     PAYMENT_PROVIDER: z.enum(["mock", "nowpayments"]).default("mock"),
     NOWPAYMENTS_API_KEY: z.string().optional(),
@@ -43,7 +50,7 @@ const envSchema = z
     BLOCKED_FILE_EXTENSIONS: z
       .string()
       .default(".exe,.bat,.cmd,.scr,.js,.vbs,.ps1,.jar"),
-    SUPPORT_USERNAME: z.string().optional(),
+    SUPPORT_USERNAME: z.preprocess(normalizeTelegramUsername, z.string().optional()),
     PLATFORM_FEE_PERCENT: z.string().optional(),
     MIN_FEE: z.string().optional(),
     MAX_FEE: z.string().optional(),
@@ -108,9 +115,28 @@ function parseAdminIds(raw: string): bigint[] {
 
 let cached: AppConfig | null = null;
 
+/** Filled from report bot `getMe` on start when `REPORT_BOT_USERNAME` is unset (deep links). */
+let cachedReportBotTelegramUsername: string | undefined;
+
 /** Vitest / scripts only — clears parsed env cache so `process.env` changes apply. */
 export function resetConfigCacheForTests(): void {
   cached = null;
+  cachedReportBotTelegramUsername = undefined;
+}
+
+/** Called when the REPORT bot process starts (see `app.ts`). */
+export function cacheReportBotTelegramUsername(username: string | undefined): void {
+  cachedReportBotTelegramUsername = normalizeTelegramUsername(username);
+}
+
+/**
+ * Username segment for `https://t.me/<user>?start=report_<token>`.
+ * Prefer `REPORT_BOT_USERNAME`; else last value from report bot `getMe` after it starts.
+ */
+export function getReportBotUsernameForDeepLinks(): string | undefined {
+  const fromEnv = loadConfig().REPORT_BOT_USERNAME;
+  if (fromEnv) return fromEnv;
+  return cachedReportBotTelegramUsername;
 }
 
 export function loadConfig(): AppConfig {

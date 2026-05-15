@@ -1,5 +1,5 @@
 import { Api, InlineKeyboard } from "grammy";
-import { getAdminTelegramIds, getMainBotToken, getReportBotToken, loadConfig } from "../../config/index.js";
+import { getAdminTelegramIds, getMainBotToken, getReportBotToken, getReportBotUsernameForDeepLinks, loadConfig } from "../../config/index.js";
 import { logger } from "../../utils/logger.js";
 import { escapeTelegramMarkdownLegacy } from "../../utils/telegram-html.js";
 import { loadReportForAdmin } from "./report.service.js";
@@ -28,7 +28,7 @@ function buildAdminReportActionKeyboard(rep: { id: string }, dealCode: string): 
       .text("Close report", `rpa:cl:${rep.id}`);
   } else {
     kb.text("View deal (main bot)", `d:v:${dealCode}`);
-    const ru = cfg.REPORT_BOT_USERNAME?.trim().replace(/^@/, "");
+    const ru = getReportBotUsernameForDeepLinks();
     if (ru) kb.row().url("Open Report bot", `https://t.me/${ru}`);
   }
   return kb;

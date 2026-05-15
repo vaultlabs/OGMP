@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { loadConfig, getReportBotToken } from "./config/index.js";
+import { loadConfig, getReportBotToken, cacheReportBotTelegramUsername } from "./config/index.js";
 import { prisma } from "./db/prisma.js";
 import { initDefaultSettings } from "./services/bot-settings.service.js";
 import { createMainBot } from "./bots/mainBot/main-bot.js";
@@ -53,6 +53,7 @@ export async function startApp(): Promise<void> {
   if (reportBot) {
     await reportBot.start({
       onStart: (info) => {
+        cacheReportBotTelegramUsername(info.username);
         logger.info("report_bot_started", { username: info.username });
       },
     });

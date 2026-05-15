@@ -1,5 +1,5 @@
 import { Bot, Context, InlineKeyboard, InputFile } from "grammy";
-import { loadConfig, isAdminTelegramId, getMainBotToken, getReportBotToken } from "../../config/index.js";
+import { loadConfig, isAdminTelegramId, getMainBotToken, getReportBotToken, getReportBotUsernameForDeepLinks } from "../../config/index.js";
 import { logger } from "../../utils/logger.js";
 import { replyTextForCaughtError } from "../../utils/user-facing-errors.js";
 import { redisIncrWithTtl } from "../../utils/redis.js";
@@ -661,17 +661,24 @@ export function createMainBot(): Bot<Context> {
       await ctx.answerCallbackQuery({ text: "Only buyer or seller can use report flow.", show_alert: true });
       return;
     }
-    const cfg = loadConfig();
     if (!getReportBotToken()) {
       await ctx.answerCallbackQuery({ text: "Report bot not configured", show_alert: true });
       return;
     }
+    const rb = getReportBotUsernameForDeepLinks();
+    if (!rb) {
+      await ctx.answerCallbackQuery({
+        text: "Report bot username missing. Set REPORT_BOT_USERNAME (no @) in .env, restart, or wait until the REPORT bot has finished starting.",
+        show_alert: true,
+      });
+      return;
+    }
     try {
       const activeRep = await findSubmittedReviewReportForDeal(deal.id);
-      const rb = cfg.REPORT_BOT_USERNAME ?? "OGMP_MM_REPORT_BOT";
       if (activeRep) {
         const { rawToken } = await createReportSession({ dealId: deal.id, userId: u.id });
         const url = `https://t.me/${rb}?start=report_${rawToken}`;
+        const kb = new InlineKeyboard().url("Open REPORT bot (add evidence)", url);
         await ctx.answerCallbackQuery({ text: "Case Review — add evidence" });
         await ctx.reply(
           [
@@ -680,20 +687,21 @@ export function createMainBot(): Bot<Context> {
             "━━━━━━━━━━━━━━━━━━",
             "",
             "What: case already open — add evidence.",
-            "Safe: keep using the linked REPORT bot session only.",
-            "Next: upload files there, then `/append_done`.",
+            "Safe: use only the REPORT bot session from the button below.",
+            "Next: tap **Open REPORT bot**, upload files, then `/append_done`.",
             "",
             `Code: \`${activeRep.reportCode}\` (${activeRep.status})`,
             "",
-            url,
+            "_Private session — do not forward._",
           ].join("\n"),
-          { parse_mode: "Markdown" },
+          { parse_mode: "Markdown", reply_markup: kb },
         );
         return;
       }
       await assertCanOpenNewReport(deal.id, u.id);
       const { rawToken } = await createReportSession({ dealId: deal.id, userId: u.id });
       const url = `https://t.me/${rb}?start=report_${rawToken}`;
+      const kb = new InlineKeyboard().url("Open REPORT bot (submit evidence)", url);
       await ctx.answerCallbackQuery({ text: "Case Review opening" });
       await ctx.reply(
         [
@@ -701,15 +709,13 @@ export function createMainBot(): Bot<Context> {
           "OGMP MM — Case Review",
           "━━━━━━━━━━━━━━━━━━",
           "",
-          "What: submit evidence in OGMP MM REPORT.",
-          "Safe: deal stays linked; don’t move pay outside the bot.",
-          "Next: open the link, upload proof, follow prompts.",
+          "What: submit evidence in the REPORT bot.",
+          "Safe: deal stays linked; do not move pay outside the bot.",
+          "Next: tap **Open REPORT bot** below and follow the prompts.",
           "",
-          url,
-          "",
-          "_Private link — don’t share._",
+          "_Private session — do not forward._",
         ].join("\n"),
-        { parse_mode: "Markdown" },
+        { parse_mode: "Markdown", reply_markup: kb },
       );
     } catch (e) {
       await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
