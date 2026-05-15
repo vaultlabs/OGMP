@@ -28,6 +28,7 @@ import { adminForceRefund, adminForceRelease } from "../../modules/admin/admin.s
 import { buildAdminEvidenceDigest } from "../../modules/reports/evidence-view.service.js";
 import { enqueueAdminReportMoreEvidence, enqueueDealParticipantNotify } from "../../modules/notifications/notificationQueue.service.js";
 import { REPORT_BOT_HOME_PAGE } from "../mainBot/trust-copy.js";
+import { extractTelegramStartPayload } from "../../modules/reports/telegram-start-payload.js";
 
 const WIZ = (id: bigint) => `ogmp:report_wiz:${id.toString()}`;
 
@@ -49,13 +50,6 @@ async function setWiz(id: bigint, w: Wiz, ttl = 3600): Promise<void> {
 
 async function clearWiz(id: bigint): Promise<void> {
   await getRedis().del(WIZ(id));
-}
-
-function startArg(ctx: Context): string | undefined {
-  const t = ctx.message?.text;
-  if (!t) return;
-  const m = /^\/start(?:@\w+)?(?:\s+(.+))?$/i.exec(t);
-  return m?.[1]?.trim();
 }
 
 function commandArgs(text: string): string[] {
@@ -114,7 +108,7 @@ export function createReportBot(): Bot<Context> {
 
   bot.command("start", async (ctx) => {
     if (!ctx.from) return;
-    const arg = startArg(ctx);
+    const arg = extractTelegramStartPayload(ctx.message?.text);
     if (!arg?.startsWith("report_")) {
       const cfg = loadConfig();
       const kb = new InlineKeyboard();
@@ -125,7 +119,20 @@ export function createReportBot(): Bot<Context> {
       const sup = cfg.SUPPORT_USERNAME?.trim().replace(/^@+/, "");
       if (sup) kb.url("Contact Support", `https://t.me/${sup}`);
       else kb.text("Contact Support", "r:hint:sup");
-      await ctx.reply(REPORT_BOT_HOME_PAGE, { reply_markup: kb });
+      try {
+        await ctx.reply(REPORT_BOT_HOME_PAGE, { reply_markup: kb });
+      } catch (e) {
+        logger.error("report_bot_start_home_reply_failed", { err: String(e) });
+        await ctx.reply(
+          [
+            "OGMP MM REPORT — Case Review",
+            "",
+            "Open a case from the main OGMP MM bot (deal card → Open Case).",
+            "If your server sets BOT_PUBLIC_USERNAME, you will also get a Start Case link button.",
+          ].join("\n"),
+          { reply_markup: kb },
+        );
+      }
       return;
     }
     const raw = arg.slice("report_".length);

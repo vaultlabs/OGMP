@@ -36,7 +36,7 @@ export async function validateReportStartToken(
   rawToken: string,
   telegramUserId: bigint,
 ): Promise<ValidatedReportSession> {
-  const hash = hashReportToken(rawToken);
+  const hash = hashReportToken(rawToken.trim());
   const session = await prisma.reportSession.findUnique({
     where: { tokenHash: hash },
     include: { user: true, deal: true },

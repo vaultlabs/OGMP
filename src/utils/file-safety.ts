@@ -4,7 +4,26 @@ import { ValidationError } from "./errors.js";
 const TG_BOT_MAX_BYTES = 50 * 1024 * 1024;
 
 /** Telegram often sends .txt as document with text/plain; some clients use application/octet-stream. */
-const OCTET_STREAM_SAFE_EXTENSIONS = new Set([".txt", ".zip", ".rar", ".7z", ".pdf"]);
+const OCTET_STREAM_SAFE_EXTENSIONS = new Set([
+  ".txt",
+  ".zip",
+  ".rar",
+  ".7z",
+  ".pdf",
+  ".tar",
+  ".gz",
+  ".tgz",
+  ".csv",
+  ".json",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".gif",
+  ".mp4",
+  ".mov",
+  ".webm",
+]);
 
 function extensionFromFileName(fileName: string | null | undefined): string {
   const raw = (fileName ?? "").trim();
@@ -35,7 +54,8 @@ export function assertFileAllowed(params: {
   const mime = (mimeRaw.split(";")[0] ?? "").trim();
 
   const isPlainTextDocument = mime === "text/plain" || ext === ".txt";
-  const isSafeArchive = ext === ".zip" || ext === ".rar" || ext === ".7z";
+  const safeArchiveExts = new Set([".zip", ".rar", ".7z", ".tar", ".gz", ".tgz"]);
+  const isSafeArchive = ext !== "" && safeArchiveExts.has(ext);
 
   if (ext && getBlockedExtensions().has(ext) && !isPlainTextDocument && !isSafeArchive) {
     throw new ValidationError(
@@ -50,7 +70,7 @@ export function assertFileAllowed(params: {
   if (mime === "application/octet-stream") {
     if (!ext || !OCTET_STREAM_SAFE_EXTENSIONS.has(ext)) {
       throw new ValidationError(
-        "This file was sent as application/octet-stream without a clear safe extension. Please send .txt, .pdf, .zip, .rar, or .7z (filename must end with that extension).",
+        "This file was sent as application/octet-stream without a clear safe extension. Rename the file so it ends with .txt, .pdf, .zip, .rar, .7z, .tar, .gz, .csv, or a common image/video extension, then send again.",
       );
     }
   }
