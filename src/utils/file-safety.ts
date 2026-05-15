@@ -1,5 +1,4 @@
-import { loadConfig } from "../config/index.js";
-import { getBlockedExtensions } from "../config/index.js";
+import { loadConfig, getBlockedExtensions } from "../config/index.js";
 import { ValidationError } from "./errors.js";
 
 const TG_BOT_MAX_BYTES = 50 * 1024 * 1024;
@@ -31,11 +30,14 @@ export function assertFileAllowed(params: {
   }
   const name = (params.fileName ?? "").toLowerCase();
   const ext = extensionFromFileName(params.fileName);
-  const mime = (params.mimeType ?? "").trim().toLowerCase();
+  const mimeRaw = (params.mimeType ?? "").trim().toLowerCase();
+  /** Telegram often appends `; charset=utf-8` — compare only the primary type. */
+  const mime = (mimeRaw.split(";")[0] ?? "").trim();
 
   const isPlainTextDocument = mime === "text/plain" || ext === ".txt";
+  const isSafeArchive = ext === ".zip" || ext === ".rar" || ext === ".7z";
 
-  if (ext && getBlockedExtensions().has(ext) && !isPlainTextDocument) {
+  if (ext && getBlockedExtensions().has(ext) && !isPlainTextDocument && !isSafeArchive) {
     throw new ValidationError(
       "This file type is blocked for safety. Send archives (.zip/.rar/.7z), images, PDFs, or text — or other allowed files, one message at a time.",
     );

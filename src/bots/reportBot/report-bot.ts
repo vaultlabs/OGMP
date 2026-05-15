@@ -301,6 +301,18 @@ export function createReportBot(): Bot<Context> {
     );
   });
 
+  async function requireEvidenceUploadStep(ctx: Context): Promise<boolean> {
+    if (!ctx.from) return false;
+    const w = await getWiz(BigInt(ctx.from.id));
+    if (!w || (w.step !== "collect" && w.step !== "append_collect")) {
+      await ctx.reply(
+        "No active evidence upload. Open the main OGMP MM bot → your deal → Open Case → tap Open REPORT bot, finish any questions, then send files here.",
+      );
+      return false;
+    }
+    return true;
+  }
+
   async function saveEvidence(ctx: Context, type: string, parts: Record<string, unknown>) {
     if (!ctx.from) return;
     const w = await getWiz(BigInt(ctx.from.id));
@@ -342,6 +354,7 @@ export function createReportBot(): Bot<Context> {
       await ctx.reply(replyTextForCaughtError(e));
       return;
     }
+    if (!(await requireEvidenceUploadStep(ctx))) return;
     await saveEvidence(ctx, "photo", {
       fileId: p?.file_id,
       fileUniqueId: p?.file_unique_id,
@@ -367,6 +380,7 @@ export function createReportBot(): Bot<Context> {
       await ctx.reply(replyTextForCaughtError(e));
       return;
     }
+    if (!(await requireEvidenceUploadStep(ctx))) return;
     await saveEvidence(ctx, "document", {
       fileId: doc.file_id,
       fileUniqueId: doc.file_unique_id,
@@ -391,6 +405,7 @@ export function createReportBot(): Bot<Context> {
       await ctx.reply(replyTextForCaughtError(e));
       return;
     }
+    if (!(await requireEvidenceUploadStep(ctx))) return;
     await saveEvidence(ctx, "video", {
       fileId: v.file_id,
       fileUniqueId: v.file_unique_id,

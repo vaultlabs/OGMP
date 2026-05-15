@@ -48,6 +48,39 @@ describe("assertFileAllowed", () => {
     );
   });
 
+  it("allows .txt with text/plain; charset=utf-8", () => {
+    expect(() =>
+      assertFileAllowed({
+        fileName: "readme.txt",
+        mimeType: "text/plain; charset=utf-8",
+        fileSize: 100,
+      }),
+    ).not.toThrow();
+  });
+
+  it("allows .zip with application/octet-stream; charset=binary", () => {
+    expect(() =>
+      assertFileAllowed({
+        fileName: "bundle.zip",
+        mimeType: "application/octet-stream; charset=binary",
+        fileSize: 1024,
+      }),
+    ).not.toThrow();
+  });
+
+  it("allows .zip even if extension list mistakenly blocks .zip", () => {
+    resetConfigCacheForTests();
+    setMinimalEnv();
+    process.env.BLOCKED_FILE_EXTENSIONS = ".exe,.zip,.txt";
+    resetConfigCacheForTests();
+    expect(() =>
+      assertFileAllowed({ fileName: "a.zip", mimeType: "application/zip", fileSize: 10 }),
+    ).not.toThrow();
+    expect(() =>
+      assertFileAllowed({ fileName: "a.txt", mimeType: "text/plain", fileSize: 10 }),
+    ).not.toThrow();
+  });
+
   it("rejects oversize file", () => {
     resetConfigCacheForTests();
     setMinimalEnv();
