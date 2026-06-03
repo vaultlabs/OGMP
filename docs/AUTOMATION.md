@@ -57,15 +57,22 @@ NOWPAYMENTS_IPN_SECRET=
 AUTO_RELEASE_ENABLED=true
 ```
 
-### Automated seller payouts
+### Automated seller payouts (no manual 2FA typing)
 
 ```env
-NOWPAYMENTS_EMAIL=          # Dashboard login email
-NOWPAYMENTS_PASSWORD=       # Dashboard password
-NOWPAYMENTS_PAYOUT_VERIFY_CODE=   # 2FA or email code for POST /v1/payout/.../verify
+NOWPAYMENTS_EMAIL=
+NOWPAYMENTS_PASSWORD=
+NOWPAYMENTS_2FA_SECRET=     # Base32 secret from NOWPayments Google Authenticator setup
 ```
 
+The bot **generates** the 6-digit verify code on every payout using `NOWPAYMENTS_2FA_SECRET`.  
+Do **not** use `NOWPAYMENTS_PAYOUT_VERIFY_CODE` unless you refuse to set up 2FA secret.
+
+**How to get the secret:** NOWPayments → Account → enable 2FA → “Can’t scan?” → copy the secret key into `.env`.
+
 Enable **Custody / Mass payouts** in the NOWPayments dashboard.
+
+**Every env variable explained:** [ENV_SETUP.md](./ENV_SETUP.md)
 
 **Webhooks** (must be reachable on `PUBLIC_BASE_URL`):
 
@@ -101,15 +108,11 @@ Payouts complete instantly in the database.
 | `/admin_remove TELEGRAM_ID` | Revoke bot-added admin |
 | `/admin_list` | List all admin IDs |
 
-## Payout verify code (important)
+## Payout verify (automatic)
 
-NOWPayments requires **POST /v1/payout/{id}/verify** with a 2FA or email code. Set `NOWPAYMENTS_PAYOUT_VERIFY_CODE` in `.env` (or refresh it when it expires). Without a valid code, payouts stay in `CREATING` and appear under **Pending payouts**.
+NOWPayments requires **POST /v1/payout/{id}/verify**. OGMP does this automatically using **`NOWPAYMENTS_2FA_SECRET`** (TOTP). No per-deal action from you.
 
-For unattended production, plan one of:
-
-- TOTP automation from your NOWPayments 2FA secret  
-- A small cron that updates the env/code from email  
-- Manual refresh when the admin panel shows failed payouts  
+If verify fails, check the secret matches Authenticator and use **Admin → Pending payouts** + `/admin_retry_payout DEALCODE`.
 
 ## Deploy checklist
 

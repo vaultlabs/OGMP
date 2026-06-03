@@ -40,7 +40,9 @@ const envSchema = z
     AUTO_RELEASE_ENABLED: z.coerce.boolean().default(true),
     NOWPAYMENTS_EMAIL: z.string().optional(),
     NOWPAYMENTS_PASSWORD: z.string().optional(),
-    /** 2FA or email verification code for POST /v1/payout/{id}/verify (required for unattended payouts). */
+    /** Google Authenticator base32 secret — bot auto-generates payout verify codes (recommended). */
+    NOWPAYMENTS_2FA_SECRET: z.string().optional(),
+    /** Manual fallback: one-time email code if 2FA is off on NOWPayments (expires ~1h). */
     NOWPAYMENTS_PAYOUT_VERIFY_CODE: z.string().optional(),
     /** After escrow payment confirms, DM buyer each delivery file_id from the deal (if false, only a Download button). */
     AUTO_SEND_DELIVERY_AFTER_PAYMENT: z.coerce.boolean().default(true),

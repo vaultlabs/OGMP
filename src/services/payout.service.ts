@@ -11,6 +11,7 @@ import { formatCryptoAmount, resolveDealPaymentAmounts } from "./fee.service.js"
 import { randomBytes } from "node:crypto";
 
 import { formatPayoutAmount } from "../payments/payout-amount.js";
+import { isPayoutVerifyConfigured } from "../payments/nowpayments-payout-verify.js";
 
 const DIV = "━━━━━━━━━━━━━━━━━━";
 
@@ -20,7 +21,11 @@ export function isAutoPayoutConfigured(): boolean {
   const cfg = loadConfig();
   if (cfg.PAYMENT_PROVIDER === "mock") return true;
   if (cfg.PAYMENT_PROVIDER !== "nowpayments") return false;
-  return Boolean(cfg.NOWPAYMENTS_EMAIL?.trim() && cfg.NOWPAYMENTS_PASSWORD?.trim());
+  return Boolean(
+    cfg.NOWPAYMENTS_EMAIL?.trim() &&
+      cfg.NOWPAYMENTS_PASSWORD?.trim() &&
+      isPayoutVerifyConfigured(),
+  );
 }
 
 export async function executeDealPayoutAfterRelease(dealId: string): Promise<void> {

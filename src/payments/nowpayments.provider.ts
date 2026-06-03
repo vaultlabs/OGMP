@@ -5,6 +5,7 @@ import { loadConfig } from "../config/index.js";
 import { logger } from "../utils/logger.js";
 import { getNowpaymentsBearerToken } from "./nowpayments-auth.js";
 import { formatPayoutAmount } from "./payout-amount.js";
+import { isPayoutVerifyConfigured, resolvePayoutVerificationCode } from "./nowpayments-payout-verify.js";
 
 const DEFAULT_API_BASE = "https://api.nowpayments.io";
 
@@ -410,7 +411,7 @@ export class NowPaymentsProvider implements PaymentProvider {
       throw new Error("NOWPayments create payout response missing withdrawal id");
     }
 
-    const verifyCode = cfg.NOWPAYMENTS_PAYOUT_VERIFY_CODE?.trim();
+    const verifyCode = await resolvePayoutVerificationCode();
     if (verifyCode) {
       const vRes = await fetch(`${this.apiBase()}/v1/payout/${encodeURIComponent(withdrawalId)}/verify`, {
         method: "POST",
@@ -427,11 +428,21 @@ export class NowPaymentsProvider implements PaymentProvider {
           withdrawalId,
           status: vRes.status,
           body: vText.slice(0, 300),
+          totpAuto: Boolean(cfg.NOWPAYMENTS_2FA_SECRET?.trim()),
         });
+        throw new Error(
+          `NOWPayments payout verify failed (${vRes.status}). Check NOWPAYMENTS_2FA_SECRET matches your Authenticator.`,
+        );
       }
+      logger.info("nowpayments_payout_verified", {
+        withdrawalId,
+        mode: cfg.NOWPAYMENTS_2FA_SECRET?.trim() ? "totp_auto" : "manual_code",
+      });
+    } else if (isPayoutVerifyConfigured()) {
+      logger.warn("nowpayments_payout_verify_empty_code");
     } else {
       logger.warn("nowpayments_payout_verify_skipped", {
-        help: "Set NOWPAYMENTS_PAYOUT_VERIFY_CODE (2FA or email code) so payouts leave CREATING status",
+        help: "Set NOWPAYMENTS_2FA_SECRET (recommended) or NOWPAYMENTS_PAYOUT_VERIFY_CODE",
       });
     }
 
