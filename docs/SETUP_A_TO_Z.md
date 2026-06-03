@@ -2,7 +2,9 @@
 
 Repo: **https://github.com/vaultlabs/OGMP**
 
-This guide assumes you want **real crypto** (NOWPayments) and **fully automated** seller payouts (2FA secret in `.env`).
+> **Using GitHub Codespaces?** Use **[SETUP_CODESPACES.md](./SETUP_CODESPACES.md)** instead — all steps are from github.com / the browser cloud, not your PC.
+
+This guide is for **your own server or PC** (VPS, Railway, Docker on desktop). For **real crypto** (NOWPayments) and **fully automated** seller payouts (2FA secret in `.env`).
 
 ---
 
