@@ -152,7 +152,24 @@ export async function executeDealPayoutAfterRelease(dealId: string): Promise<Dea
       const err = String(e);
       logger.error("deal_payout_execute_failed", { dealId, err });
       let adminDetail = err;
-      if (err.toLowerCase().includes("insufficient balance")) {
+      const errLower = err.toLowerCase();
+      if (errLower.includes("whitelist") || errLower.includes("not allowed") || errLower.includes("invalid address")) {
+        adminDetail = [
+          err,
+          "",
+          "NOWPayments wallet whitelist: each new seller address must be allowed on your account.",
+          "For escrow (many different wallets), email whitelist@nowpayments.io to disable wallet whitelisting on payouts.",
+          "See docs/FULL_AUTOMATION_NOWPAYMENTS.md in the repo.",
+        ].join("\n");
+      } else if (errLower.includes("invalid ip")) {
+        adminDetail = [
+          err,
+          "",
+          "Whitelist your server IP in NOWPayments → Settings → Whitelist → Whitelist IPs,",
+          "or ask whitelist@nowpayments.io to disable IP whitelisting for API payouts.",
+          "Codespaces: run curl -s https://api.ipify.org and whitelist that IP.",
+        ].join("\n");
+      } else if (err.toLowerCase().includes("insufficient balance")) {
         const { fetchNowpaymentsBalance, formatInsufficientBalanceHelp } = await import(
           "../payments/nowpayments-balance.js"
         );

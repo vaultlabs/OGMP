@@ -19,7 +19,7 @@
 
 **VPS / your own server:** [docs/SETUP_A_TO_Z.md](docs/SETUP_A_TO_Z.md)
 
-Shorter reference: [docs/ENV_SETUP.md](docs/ENV_SETUP.md) · [docs/AUTOMATION.md](docs/AUTOMATION.md)
+Shorter reference: [docs/ENV_SETUP.md](docs/ENV_SETUP.md) · [docs/AUTOMATION.md](docs/AUTOMATION.md) · [docs/FULL_AUTOMATION_NOWPAYMENTS.md](docs/FULL_AUTOMATION_NOWPAYMENTS.md) (no manual wallet/payout approval)
 
 ## Super simple start (read this first)
 

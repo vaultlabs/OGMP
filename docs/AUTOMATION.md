@@ -2,6 +2,8 @@
 
 This bot runs **end-to-end escrow without manual steps** for normal deals. Admins only step in for disputes, stuck payouts, or policy exceptions.
 
+**Still approving payouts or wallets in the NOWPayments dashboard?** That is NOWPayments security, not missing bot code. Read **[FULL_AUTOMATION_NOWPAYMENTS.md](./FULL_AUTOMATION_NOWPAYMENTS.md)** (email template to disable wallet/IP whitelist + full checklist).
+
 ## Flow (buyer + seller)
 
 | Step | Who | What happens |
