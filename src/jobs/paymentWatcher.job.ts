@@ -6,7 +6,8 @@ export async function runPaymentWatcherOnce(): Promise<void> {
   const deals = await prisma.deal.findMany({
     where: { status: { in: ["waiting_payment", "payment_detected"] } },
     select: { id: true },
-    take: 50,
+    orderBy: { updatedAt: "desc" },
+    take: 100,
   });
   for (const d of deals) {
     try {

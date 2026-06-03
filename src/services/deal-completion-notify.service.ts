@@ -3,15 +3,20 @@ import { prisma } from "../db/prisma.js";
 import { COMMUNITY_TRUST_LINE, TRUST_OPS_FOOTER } from "../bots/mainBot/trust-copy.js";
 import { enqueueDealParticipantNotify } from "../modules/notifications/notificationQueue.service.js";
 import { logger } from "../utils/logger.js";
+import { formatCryptoAmount, resolveDealPaymentAmounts } from "./fee.service.js";
+import type { FeePayer } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 
 export function formatReceiptPlain(deal: {
   dealCode: string;
   buyer: { firstName: string | null; username: string | null } | null;
   seller: { firstName: string | null; username: string | null } | null;
-  amount: { toString(): string };
+  amount: Prisma.Decimal;
   currency: string;
   network: string;
-  feeAmount: { toString(): string };
+  feeAmount: Prisma.Decimal;
+  feePayer: FeePayer;
+  networkFeeEstimate: Prisma.Decimal;
   status: string;
   releasedAt: Date | null;
   txHash: string | null;
@@ -24,6 +29,7 @@ export function formatReceiptPlain(deal: {
     deal.seller?.username != null && deal.seller.username !== ""
       ? `@${deal.seller.username}`
       : deal.seller?.firstName ?? "Seller";
+  const amounts = resolveDealPaymentAmounts(deal);
   return [
     "━━━━━━━━━━━━━━━━━━",
     "OGMP MM — Deal Receipt",
@@ -32,9 +38,11 @@ export function formatReceiptPlain(deal: {
     `Deal ID: ${deal.dealCode}`,
     `Buyer: ${b}`,
     `Seller: ${s}`,
-    `Amount: ${deal.amount.toString()} ${deal.currency}`,
+    `Deal amount: ${formatCryptoAmount(amounts.dealAmount)} ${deal.currency}`,
+    `Escrow fee: ${formatCryptoAmount(amounts.escrowFee)} ${deal.currency} (${amounts.feePayer})`,
+    `Buyer paid: ${formatCryptoAmount(amounts.buyerPays)} ${deal.currency}`,
+    `Seller received: ${formatCryptoAmount(amounts.sellerReceives)} ${deal.currency}`,
     `Network: ${deal.network}`,
-    `Fee: ${deal.feeAmount.toString()}`,
     `Status: ${deal.status === "released" ? "Completed" : deal.status}`,
     `Completed at: ${deal.releasedAt?.toISOString().slice(0, 19) ?? "—"}Z`,
     `Transaction hash: ${deal.txHash ?? "—"}`,

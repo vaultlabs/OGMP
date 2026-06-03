@@ -3,13 +3,20 @@ import { Prisma as PrismaNs } from "@prisma/client";
 import { randomBytes } from "node:crypto";
 import { prisma } from "../../db/prisma.js";
 import { allocateDealCode } from "../../services/deal-code.service.js";
-import { computeFeeBreakdown, getActiveFeeSettings } from "../../services/fee.service.js";
+import {
+  computeFeeBreakdown,
+  computeProcessorInvoiceAmount,
+  getActiveFeeSettings,
+  quoteDealPaymentTotals,
+  resolveDealPaymentAmountsPreProcessor,
+} from "../../services/fee.service.js";
 import { assertValidDealTransition } from "../../services/escrow-state-machine.js";
 import { applyDealDisputedStats, applyDealReleasedStats } from "../../services/reputation.service.js";
 import { onDealReleasedSideEffects } from "../../services/deal-completion-notify.service.js";
 import { writeAuditLog } from "../../services/audit.service.js";
 import { appendDealTimelineEvent } from "../dealTimeline/timeline.service.js";
 import { enqueueDealParticipantNotify } from "../notifications/notificationQueue.service.js";
+import { notifyDealParticipantCritical } from "../notifications/critical-notify.service.js";
 import { ConflictError, ForbiddenError, NotFoundError, StateMachineError } from "../../utils/errors.js";
 import {
   paymentAddressSetupFailedBuyerMessage,
@@ -18,6 +25,8 @@ import {
 import { getPaymentProvider } from "../../payments/index.js";
 import { loadConfig } from "../../config/index.js";
 import { isAutoReleaseEnabled } from "../../services/bot-settings.service.js";
+import { executeDealPayoutAfterRelease } from "../../services/payout.service.js";
+import { sellerPayoutReady } from "./seller-payout.service.js";
 import { acquireLock, releaseLock } from "../../utils/redis.js";
 import { logger } from "../../utils/logger.js";
 import type { createDealSchema } from "./deal.validation.js";
@@ -55,10 +64,16 @@ export async function createDeal(creator: User, input: CreateDealInput): Promise
   const feeRow = await getActiveFeeSettings();
   const dealAmount = new PrismaNs.Decimal(input.amount);
   const amountUsdForCaps = dealAmount; // TODO: FX rate service for non-USD notional caps
+  const quoted = await quoteDealPaymentTotals({
+    amount: input.amount,
+    currency: input.currency,
+    network: input.network,
+    feePayer: input.feePayer,
+  });
   const breakdown = computeFeeBreakdown({
     dealAmount,
     amountUsdForCaps,
-    networkFeeEstimate: new PrismaNs.Decimal(0),
+    networkFeeEstimate: quoted.networkFeeEstimate,
     feePayer: input.feePayer,
     percentage: feeRow.percentage,
     minimumUsd: feeRow.minimumUsd,
@@ -205,6 +220,11 @@ export async function acceptTerms(userId: string, dealId: string): Promise<Deal>
       metadata: { allAccepted },
     });
     if (updated.status === "waiting_payment") {
+      const freshDeal = await prisma.deal.findUnique({ where: { id: dealId } });
+      if (freshDeal && !sellerPayoutReady(freshDeal)) {
+        await notifySellerPayoutWalletRequired(freshDeal.id);
+        return freshDeal;
+      }
       try {
         return await ensurePaymentInstruction(updated.id);
       } catch (e) {
@@ -251,11 +271,43 @@ export async function acceptTerms(userId: string, dealId: string): Promise<Deal>
   }
 }
 
+async function notifySellerPayoutWalletRequired(dealId: string): Promise<void> {
+  const deal = await prisma.deal.findUnique({
+    where: { id: dealId },
+    include: { seller: true },
+  });
+  if (!deal?.seller) return;
+  await enqueueDealParticipantNotify({
+    targetTelegramId: deal.seller.telegramId,
+    text: [
+      "━━━━━━━━━━━━━━━━━━",
+      "OGMP MM — Set payout wallet",
+      "━━━━━━━━━━━━━━━━━━",
+      "",
+      `Deal: ${deal.dealCode}`,
+      `Network: ${deal.currency} (${deal.network})`,
+      "",
+      "What: add the wallet where you want crypto when the buyer releases.",
+      "Safe: buyer cannot pay until your wallet is confirmed.",
+      "Next: open the deal → Set payout wallet.",
+    ].join("\n"),
+    buttons: [
+      [
+        { text: "Set payout wallet", cb: `spw:start:${deal.dealCode}` },
+        { text: "View deal", cb: `d:v:${deal.dealCode}` },
+      ],
+    ],
+  });
+}
+
 export async function ensurePaymentInstruction(dealId: string): Promise<Deal> {
   const deal = await prisma.deal.findUnique({ where: { id: dealId } });
   if (!deal) throw new NotFoundError("Deal not found");
   if (deal.status !== "waiting_payment") return deal;
   if (deal.paymentAddress) return deal;
+  if (!sellerPayoutReady(deal)) {
+    throw new StateMachineError("SELLER_PAYOUT_REQUIRED");
+  }
 
   const coin = await prisma.supportedCoin.findFirst({
     where: { currency: deal.currency, network: deal.network, enabled: true },
@@ -263,8 +315,20 @@ export async function ensurePaymentInstruction(dealId: string): Promise<Deal> {
   if (!coin) throw new StateMachineError("This coin/network is not enabled");
 
   const provider = getPaymentProvider();
-  const expectedAmount = deal.amount.toString();
-  const addr = await provider.createPaymentAddress(deal, expectedAmount, deal.currency, deal.network);
+  const prelim = resolveDealPaymentAmountsPreProcessor(deal);
+  const invoice = computeProcessorInvoiceAmount(deal);
+  const addr = await provider.createPaymentAddress(
+    deal,
+    invoice.toString(),
+    deal.currency,
+    deal.network,
+  );
+  let buyerPays = prelim.buyerPays;
+  let processorFee = deal.networkFeeEstimate;
+  if (addr.buyerPayAmount) {
+    buyerPays = new PrismaNs.Decimal(addr.buyerPayAmount);
+    processorFee = PrismaNs.Decimal.max(0, buyerPays.sub(prelim.buyerPays));
+  }
   const expires = new Date(Date.now() + coin.paymentTimeoutMinutes * 60 * 1000);
   const idempotencyKey = `${provider.name}:${deal.id}:${deal.version}`;
 
@@ -276,7 +340,7 @@ export async function ensurePaymentInstruction(dealId: string): Promise<Deal> {
         idempotencyKey,
         address: addr.address,
         reference: addr.reference,
-        expectedAmount: deal.amount,
+        expectedAmount: buyerPays,
         currency: deal.currency,
         network: deal.network,
         status: "pending",
@@ -290,6 +354,7 @@ export async function ensurePaymentInstruction(dealId: string): Promise<Deal> {
         paymentAddress: addr.address,
         paymentProviderRef: addr.providerRef,
         paymentExpiresAt: expires,
+        networkFeeEstimate: processorFee,
         version: { increment: 1 },
       },
     });
@@ -297,13 +362,27 @@ export async function ensurePaymentInstruction(dealId: string): Promise<Deal> {
   await writeAuditLog({
     eventType: "payment_address_generated",
     dealId,
-    metadata: { provider: provider.name },
+    metadata: {
+      provider: provider.name,
+      buyerPayAmount: buyerPays.toString(),
+      processorFee: processorFee.toString(),
+      invoiceAmount: invoice.toString(),
+    },
   });
   await appendDealTimelineEvent({
     dealId,
     eventType: "payment_address_generated",
     metadata: { provider: provider.name },
   });
+  const { clearPaymentProgressNotifyKeys } = await import("../payments/payment-notify.service.js");
+  await clearPaymentProgressNotifyKeys(dealId);
+  const { markDealHotPaymentPoll } = await import("../payments/hot-payment-poll.service.js");
+  await markDealHotPaymentPoll(dealId);
+  void import("../payments/payment.service.js").then(({ applyPaymentSyncForDeal }) =>
+    applyPaymentSyncForDeal(dealId).catch((e) =>
+      logger.warn("payment_immediate_sync_after_address", { dealId, err: String(e) }),
+    ),
+  );
   return prisma.deal.findUniqueOrThrow({ where: { id: dealId } });
 }
 
@@ -365,7 +444,7 @@ export async function markDelivered(sellerId: string, dealId: string): Promise<D
         buttons: [
           [
             { text: "View deal", cb: `d:v:${deal.dealCode}` },
-            { text: "Confirm received", cb: `d:rel:${deal.dealCode}` },
+            { text: "Release to seller", cb: `d:rel:${deal.dealCode}` },
           ],
         ],
       });
@@ -406,17 +485,24 @@ export async function buyerConfirmRelease(buyerId: string, dealId: string): Prom
     const released = await prisma.deal.findUniqueOrThrow({ where: { id: dealId } });
     await applyDealReleasedStats(released);
     await onDealReleasedSideEffects(dealId);
+    void executeDealPayoutAfterRelease(dealId).catch((err) => {
+      logger.error("auto_payout_after_release_failed", { dealId, err: String(err) });
+    });
     if (deal.sellerId) {
       const su = await prisma.user.findUnique({ where: { id: deal.sellerId } });
       if (su) {
-        await enqueueDealParticipantNotify({
+        await notifyDealParticipantCritical({
           targetTelegramId: su.telegramId,
           text: [
+            "━━━━━━━━━━━━━━━━━━",
             "OGMP MM — Funds released",
+            "━━━━━━━━━━━━━━━━━━",
             "",
             `Deal: ${deal.dealCode}`,
             "",
-            "Buyer confirmed — escrow release completed (auto).",
+            "What: buyer confirmed — crypto payout is being sent to your wallet.",
+            "Safe: deal closed successfully.",
+            "Next: watch your wallet; you'll get another message when the transfer is submitted.",
           ].join("\n"),
           buttons: [[{ text: "View deal", cb: `d:v:${deal.dealCode}` }]],
         });
@@ -442,14 +528,17 @@ export async function buyerConfirmRelease(buyerId: string, dealId: string): Prom
   if (deal.sellerId) {
     const su = await prisma.user.findUnique({ where: { id: deal.sellerId } });
     if (su) {
-      await enqueueDealParticipantNotify({
+      await notifyDealParticipantCritical({
         targetTelegramId: su.telegramId,
         text: [
+          "━━━━━━━━━━━━━━━━━━",
           "OGMP MM — Buyer confirmed",
+          "━━━━━━━━━━━━━━━━━━",
           "",
           `Deal: ${deal.dealCode}`,
           "",
-          "Release is pending admin approval.",
+          "What: buyer confirmed receipt.",
+          "Next: admin release approval (or use /admin_release).",
         ].join("\n"),
         buttons: [[{ text: "View deal", cb: `d:v:${deal.dealCode}` }]],
       });

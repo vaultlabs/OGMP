@@ -4,11 +4,15 @@ import { prisma } from "../../db/prisma.js";
 import { logAdminAction } from "./admin.repository.js";
 import { writeAuditLog } from "../../services/audit.service.js";
 import { ForbiddenError, NotFoundError, StateMachineError } from "../../utils/errors.js";
-import { getPaymentProvider } from "../../payments/index.js";
 import { isAdminTelegramId } from "../../config/index.js";
 import { applyDealReleasedStats } from "../../services/reputation.service.js";
 import { onDealReleasedSideEffects } from "../../services/deal-completion-notify.service.js";
 import { appendDealTimelineEvent } from "../dealTimeline/timeline.service.js";
+import {
+  executeDealPayoutAfterRelease,
+  markPayoutCompleted,
+} from "../../services/payout.service.js";
+import { logger } from "../../utils/logger.js";
 
 function assertAdmin(telegramId: bigint): void {
   if (!isAdminTelegramId(telegramId)) throw new ForbiddenError("Admin only");
@@ -52,21 +56,6 @@ export async function adminForceRelease(dealId: string, adminTelegramId: bigint)
       version: { increment: 1 },
     },
   });
-  const provider = getPaymentProvider();
-  if (deal.sellerPayoutAddress) {
-    await prisma.payout.create({
-      data: {
-        dealId,
-        amount: deal.amount,
-        feeDeducted: deal.feeAmount,
-        currency: deal.currency,
-        network: deal.network,
-        toAddress: deal.sellerPayoutAddress,
-        status: "pending",
-        providerRef: `${provider.name}:admin_release`,
-      },
-    });
-  }
   await logAdminAction({
     adminTelegramId,
     action: "force_release",
@@ -89,6 +78,46 @@ export async function adminForceRelease(dealId: string, adminTelegramId: bigint)
   const released = await prisma.deal.findUniqueOrThrow({ where: { id: dealId } });
   await applyDealReleasedStats(released);
   await onDealReleasedSideEffects(dealId);
+  void executeDealPayoutAfterRelease(dealId).catch((err) => {
+    logger.error("admin_payout_after_release_failed", { dealId, err: String(err) });
+  });
+}
+
+export async function adminRetryPayout(dealCode: string, adminTelegramId: bigint): Promise<void> {
+  assertAdmin(adminTelegramId);
+  const deal = await prisma.deal.findUnique({ where: { dealCode } });
+  if (!deal) throw new NotFoundError("Deal not found");
+  if (deal.status !== "released") {
+    throw new StateMachineError("Retry payout only applies to released deals");
+  }
+  await logAdminAction({
+    adminTelegramId,
+    action: "retry_payout",
+    dealId: deal.id,
+  });
+  await executeDealPayoutAfterRelease(deal.id);
+}
+
+export async function adminMarkPayoutCompleted(params: {
+  adminTelegramId: bigint;
+  payoutId: string;
+  txHash?: string;
+  note?: string;
+}): Promise<void> {
+  assertAdmin(params.adminTelegramId);
+  const payout = await prisma.payout.findUnique({ where: { id: params.payoutId } });
+  if (!payout) throw new NotFoundError("Payout not found");
+  await markPayoutCompleted({
+    payoutId: params.payoutId,
+    txHash: params.txHash,
+    adminNote: params.note,
+  });
+  await logAdminAction({
+    adminTelegramId: params.adminTelegramId,
+    action: "payout_completed",
+    dealId: payout.dealId,
+    metadata: { payoutId: params.payoutId },
+  });
 }
 
 export async function adminForceRefund(dealId: string, adminTelegramId: bigint): Promise<void> {

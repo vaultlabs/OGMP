@@ -31,6 +31,12 @@ import {
 } from "../../modules/gateway/admin-gateway-prompt.service.js";
 import { registerDealRoomHandlers } from "./deal-room.handlers.js";
 import {
+  handleSellerPayoutAddressMessage,
+  registerSellerPayoutHandlers,
+  sellerPayoutDealButton,
+  sellerPayoutReady,
+} from "./seller-payout.handlers.js";
+import {
   clearActiveDealRoom,
   getActiveDealRoom,
 } from "../../modules/dealMessages/deal-room-session.service.js";
@@ -76,8 +82,19 @@ import {
   adminCancelDeal,
   adminForceRefund,
   adminForceRelease,
+  adminMarkPayoutCompleted,
+  adminRetryPayout,
   exportDealsCsv,
 } from "../../modules/admin/admin.service.js";
+import {
+  addExtraAdmin,
+  getAllAdminTelegramIds,
+  removeExtraAdmin,
+} from "../../modules/admin/admin-ids.service.js";
+import {
+  formatAdminPayoutList,
+  listAdminPayoutQueue,
+} from "../../modules/admin/admin-payouts.service.js";
 import { applyReview, appendReviewOptionalText } from "../../services/reputation.service.js";
 import { formatReceiptPlain, rateButtons } from "../../services/deal-completion-notify.service.js";
 import { getAdminDashboardSnapshot } from "../../modules/admin/admin-dashboard.service.js";
@@ -109,12 +126,27 @@ import {
   notifyBothAfterPaymentLive,
   notifyCounterpartyAfterTermsAccept,
 } from "../../modules/deals/deal-next-step-guide.service.js";
+import { ADMIN_PANEL_INTRO, adminMenuKeyboard } from "./admin-panel.js";
+import { caseReviewOpenMessage } from "./case-review-copy.js";
+import {
+  formatCryptoAmount,
+  formatFeeBreakdownLines,
+  quoteDealPaymentTotals,
+  resolveDealPaymentAmounts,
+} from "../../services/fee.service.js";
+import { maskPayoutAddress } from "../../services/payout.service.js";
 
 function startArg(ctx: Context): string | undefined {
   const t = ctx.message?.text;
   if (!t) return;
   const m = /^\/start(?:@\w+)?(?:\s+(.+))?$/i.exec(t);
   return m?.[1]?.trim();
+}
+
+function createDealRoleKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("I am the Buyer", "w:role:buyer")
+    .text("I am the Seller", "w:role:seller");
 }
 
 function mainMenuKb(isAdmin: boolean): InlineKeyboard {
@@ -139,6 +171,92 @@ function mainMenuKb(isAdmin: boolean): InlineKeyboard {
 function fmtUserLine(u: { telegramId: bigint; username: string | null; firstName: string | null }): string {
   const un = u.username ? `@${u.username}` : "no username";
   return `${u.firstName ?? "User"} (${un}, id ${u.telegramId.toString()})`;
+}
+
+async function replyJoinDealSuccess(
+  ctx: Context,
+  user: User,
+  deal: { id: string; dealCode: string },
+): Promise<void> {
+  await ctx.reply(`Joined deal ${deal.dealCode}.`);
+  await ctx.reply(await fmtDealCard(deal.id, user.id), { parse_mode: "HTML" });
+  await ctx.reply("Next: both sides accept terms.", {
+    reply_markup: joinSuccessKeyboard(deal.dealCode),
+  });
+}
+
+async function tryJoinDealByToken(ctx: Context, user: User, token: string): Promise<void> {
+  try {
+    const deal = await joinDealByToken(user, token);
+    await replyJoinDealSuccess(ctx, user, deal);
+  } catch (e) {
+    await ctx.reply(`❌ ${String((e as Error).message)}`);
+  }
+}
+
+async function replyMyDealsList(ctx: Context, u: User, brief = false): Promise<void> {
+  const deals = await prisma.deal.findMany({
+    where: { OR: [{ buyerId: u.id }, { sellerId: u.id }, { creatorId: u.id }] },
+    orderBy: { createdAt: "desc" },
+    take: 15,
+  });
+  if (!deals.length) {
+    await ctx.reply(
+      brief
+        ? "No deals."
+        : "No deals yet — create one or use an invite from your counterparty.",
+      {
+        reply_markup: brief ? undefined : new InlineKeyboard().text("Create deal", "m:create"),
+      },
+    );
+    return;
+  }
+  const kb = new InlineKeyboard();
+  for (const d of deals) {
+    kb.text(brief ? d.dealCode : `${d.dealCode} (${d.status})`, `d:v:${d.dealCode}`).row();
+  }
+  await ctx.reply(brief ? "Tap a deal:" : "Pick a deal to see status and the next action:", {
+    reply_markup: kb,
+  });
+}
+
+async function startCreateDealFlow(ctx: Context, telegramId: bigint): Promise<void> {
+  await clearActiveDealRoom(telegramId);
+  await setCreateWizard(telegramId, { step: "role" });
+  await ctx.reply("Select your role in this deal:", { reply_markup: createDealRoleKeyboard() });
+}
+
+async function replyUserProfile(ctx: Context, u: User): Promise<void> {
+  const community = computeCommunityBadge(u);
+  const adminBadge = u.profileBadge?.trim() || "—";
+  const un = u.username ? `@${u.username}` : "no username";
+  await ctx.reply(
+    [
+      "━━━━━━━━━━━━━━━━━━",
+      "OGMP MM — Profile",
+      "━━━━━━━━━━━━━━━━━━",
+      "",
+      "What: your trading snapshot here.",
+      "Safe: badges don’t move funds — Deal Protection rules still apply per deal.",
+      "Next: My Deals to jump back in.",
+      "",
+      `User: ${u.firstName ?? "User"} (${un})`,
+      `Status: ${u.banned ? "Restricted" : "Active"}`,
+      `Completed deals: ${u.completedDeals}`,
+      `Total volume (USD field): ${u.totalVolumeUsd.toString()}`,
+      `Rating: ${u.reputationScore.toString()} ⭐`,
+      `Case holds (lifetime): ${u.disputedDeals}`,
+      `Joined: ${u.joinedAt.toISOString().slice(0, 10)}`,
+      `Community tier: ${community}`,
+      `Admin badge: ${adminBadge}`,
+      "",
+      "Community:",
+      "Part of the 1,100+ member OGMP network",
+      "",
+      TRUST_OPS_FOOTER,
+    ].join("\n"),
+    { reply_markup: new InlineKeyboard().text("My Deals", "m:deals").text("Back", "m:menu") },
+  );
 }
 
 /**
@@ -178,6 +296,8 @@ async function fmtDealCard(dealId: string, viewerUserId: string | null = null): 
     d.buyerId === viewerUserId &&
     (d.status === "waiting_payment" || d.status === "payment_detected") &&
     sellerLockedCount === 0;
+  const payAmounts = resolveDealPaymentAmounts(d);
+  const isBuyerView = !!viewerUserId && d.buyerId === viewerUserId;
 
   const lines: string[] = [
     "━━━━━━━━━━━━━━━━━━",
@@ -188,8 +308,16 @@ async function fmtDealCard(dealId: string, viewerUserId: string | null = null): 
     `<b>Status</b>: ${e(displayStatus)}${d.frozen ? " (frozen)" : ""}`,
     `<b>Buyer</b>: ${e(buyer)}`,
     `<b>Seller</b>: ${e(seller)}`,
-    `<b>Amount</b>: ${e(d.amount.toString())} ${e(d.currency)} (${e(d.network)})`,
-    `<b>Fee</b>: ${e(d.feeAmount.toString())} (${e(String(d.feePayer))})`,
+    `<b>Deal amount</b>: ${e(formatCryptoAmount(payAmounts.dealAmount))} ${e(d.currency)} (${e(d.network)})`,
+    `<b>OGMP fee (1%)</b>: ${e(formatCryptoAmount(payAmounts.escrowFee))} ${e(d.currency)} (${e(String(d.feePayer))} pays)`,
+    payAmounts.networkFeeEstimate.gt(0)
+      ? `<b>NOWPayments fee</b>: ${e(formatCryptoAmount(payAmounts.networkFeeEstimate))} ${e(d.currency)}`
+      : `<b>NOWPayments fee</b>: ${e("quoted when payment opens")}`,
+    `<b>Pay exactly</b>: ${e(formatCryptoAmount(payAmounts.buyerPays))} ${e(d.currency)}`,
+    `<b>Seller receives</b>: ${e(formatCryptoAmount(payAmounts.sellerReceives))} ${e(d.currency)}`,
+    d.sellerId === viewerUserId
+      ? `<b>Your payout wallet</b>: ${sellerPayoutReady(d) ? e(maskPayoutAddress(d.sellerPayoutAddress!)) : e("not set — required before buyer pays")}`
+      : "",
     `<b>Escrow step</b>: ${pay ? e(pay.status.replace(/_/g, " ")) : "—"}`,
     `<b>Delivery Vault</b>: ${e(delivery)}`,
     `<b>Deal Protection</b>: ${d.frozen ? e("paused — Case Review") : e("on")}`,
@@ -216,8 +344,11 @@ ${e(termsPreview)}`,
         "",
         `<b>Escrow pay</b>:`,
         `<code>${e(d.paymentAddress)}</code>`,
-        `<b>Exact amount</b>: ${e(d.amount.toString())} ${e(d.currency)} on ${e(d.network)}`,
-        `<i>${e("Wrong network = loss. Never pay outside OGMP MM.")}</i>`,
+        `<b>Pay exactly</b>: ${e(formatCryptoAmount(payAmounts.buyerPays))} ${e(d.currency)} on ${e(d.network)}`,
+        isBuyerView
+          ? `<i>${e("Send this exact total so the seller receives the deal amount after fees.")}</i>`
+          : `<i>${e("Buyer must send the Pay exactly total. Wrong network = loss.")}</i>`,
+        `<i>${e("Never pay outside OGMP MM.")}</i>`,
       );
     }
   }
@@ -273,6 +404,7 @@ export function createMainBot(): Bot<Context> {
   bot.use(gatewayAccessMiddleware);
 
   registerDealRoomHandlers(bot);
+  registerSellerPayoutHandlers(bot);
 
   async function requireUser(ctx: Context) {
     if (!ctx.from) return null;
@@ -293,16 +425,7 @@ export function createMainBot(): Bot<Context> {
 
     if (joinTok) {
       await clearPendingJoinInvite(tid);
-      try {
-        const deal = await joinDealByToken(user, joinTok);
-        await ctx.reply(`Joined deal ${deal.dealCode}.`);
-        await ctx.reply(await fmtDealCard(deal.id, user.id), { parse_mode: "HTML" });
-        await ctx.reply("Next: both sides accept terms.", {
-          reply_markup: joinSuccessKeyboard(deal.dealCode),
-        });
-      } catch (e) {
-        await ctx.reply(`❌ ${String((e as Error).message)}`);
-      }
+      await tryJoinDealByToken(ctx, user, joinTok);
       return;
     }
 
@@ -428,14 +551,8 @@ export function createMainBot(): Bot<Context> {
       await ctx.answerCallbackQuery({ text: "Accept terms first", show_alert: true });
       return;
     }
-    await clearActiveDealRoom(BigInt(ctx.from.id));
-    await setCreateWizard(BigInt(ctx.from.id), { step: "role" });
     await ctx.answerCallbackQuery();
-    await ctx.reply("Select your role in this deal:", {
-      reply_markup: new InlineKeyboard()
-        .text("I am the Buyer", "w:role:buyer")
-        .text("I am the Seller", "w:role:seller"),
-    });
+    await startCreateDealFlow(ctx, BigInt(ctx.from.id));
   });
 
   bot.callbackQuery(/^w:role:(buyer|seller)$/, async (ctx) => {
@@ -488,23 +605,8 @@ export function createMainBot(): Bot<Context> {
     if (!ctx.from) return;
     const u = await findUserByTelegramId(BigInt(ctx.from.id));
     if (!u) return;
-    const deals = await prisma.deal.findMany({
-      where: { OR: [{ buyerId: u.id }, { sellerId: u.id }, { creatorId: u.id }] },
-      orderBy: { createdAt: "desc" },
-      take: 15,
-    });
     await ctx.answerCallbackQuery();
-    if (!deals.length) {
-      await ctx.reply("No deals yet — create one or use an invite from your counterparty.", {
-        reply_markup: new InlineKeyboard().text("Create deal", "m:create"),
-      });
-      return;
-    }
-    const kb = new InlineKeyboard();
-    for (const d of deals) {
-      kb.text(`${d.dealCode} (${d.status})`, `d:v:${d.dealCode}`).row();
-    }
-    await ctx.reply("Pick a deal to see status and the next action:", { reply_markup: kb });
+    await replyMyDealsList(ctx, u);
   });
 
   bot.callbackQuery(/^d:v:(.+)$/, async (ctx) => {
@@ -561,6 +663,10 @@ export function createMainBot(): Bot<Context> {
     if (deal.status === "pending_acceptance") {
       kb.text("Accept terms", `d:a:${deal.dealCode}`).row();
     }
+    const spwBtn = sellerPayoutDealButton(deal, u.id);
+    if (spwBtn && !sellerPayoutReady(deal) && deal.status !== "released" && deal.status !== "cancelled") {
+      kb.text(spwBtn.text, spwBtn.cb).row();
+    }
     if (
       deal.buyerId === u.id &&
       lockedPre > 0 &&
@@ -574,8 +680,8 @@ export function createMainBot(): Bot<Context> {
     if (deal.status === "funded" && deal.sellerId === u.id) {
       kb.text("Mark delivered", `d:del:${deal.dealCode}`).row();
     }
-    if (deal.status === "item_delivered") {
-      kb.text("Confirm received", `d:rel:${deal.dealCode}`).row();
+    if (deal.status === "item_delivered" && deal.buyerId === u.id) {
+      kb.text("Release to seller", `d:rel:${deal.dealCode}`).row();
     }
     if (
       deal.status === "waiting_payment" ||
@@ -681,19 +787,11 @@ export function createMainBot(): Bot<Context> {
         const kb = new InlineKeyboard().url("Open REPORT bot (add evidence)", url);
         await ctx.answerCallbackQuery({ text: "Case Review — add evidence" });
         await ctx.reply(
-          [
-            "━━━━━━━━━━━━━━━━━━",
-            "OGMP MM — Case Review",
-            "━━━━━━━━━━━━━━━━━━",
-            "",
-            "What: case already open — add evidence.",
-            "Safe: use only the REPORT bot session from the button below.",
-            "Next: tap **Open REPORT bot**, upload files, then `/append_done`.",
-            "",
-            `Code: \`${activeRep.reportCode}\` (${activeRep.status})`,
-            "",
-            "_Private session — do not forward._",
-          ].join("\n"),
+          caseReviewOpenMessage({
+            mode: "append",
+            reportCode: activeRep.reportCode,
+            status: activeRep.status,
+          }),
           { parse_mode: "Markdown", reply_markup: kb },
         );
         return;
@@ -703,20 +801,10 @@ export function createMainBot(): Bot<Context> {
       const url = `https://t.me/${rb}?start=report_${rawToken}`;
       const kb = new InlineKeyboard().url("Open REPORT bot (submit evidence)", url);
       await ctx.answerCallbackQuery({ text: "Case Review opening" });
-      await ctx.reply(
-        [
-          "━━━━━━━━━━━━━━━━━━",
-          "OGMP MM — Case Review",
-          "━━━━━━━━━━━━━━━━━━",
-          "",
-          "What: submit evidence in the REPORT bot.",
-          "Safe: deal stays linked; do not move pay outside the bot.",
-          "Next: tap **Open REPORT bot** below and follow the prompts.",
-          "",
-          "_Private session — do not forward._",
-        ].join("\n"),
-        { parse_mode: "Markdown", reply_markup: kb },
-      );
+      await ctx.reply(caseReviewOpenMessage({ mode: "new" }), {
+        parse_mode: "Markdown",
+        reply_markup: kb,
+      });
     } catch (e) {
       await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
     }
@@ -737,22 +825,7 @@ export function createMainBot(): Bot<Context> {
     await ctx.reply("The buyer was reminded to complete payment.");
   });
 
-  bot.callbackQuery(/^bx:pay:(.+)$/, async (ctx) => {
-    if (!ctx.from || !ctx.match) return;
-    const code = ctx.match[1];
-    const deal = await prisma.deal.findUnique({ where: { dealCode: code } });
-    if (!deal) {
-      await ctx.answerCallbackQuery({ text: "Not found", show_alert: true });
-      return;
-    }
-    const { runBuyerPaymentCheck } = await import("../../modules/payments/buyer-payment-check.service.js");
-    await ctx.answerCallbackQuery();
-    await ctx.reply("Checking payment status…");
-    const msg = await runBuyerPaymentCheck(deal.id, BigInt(ctx.from.id));
-    await ctx.reply(msg);
-  });
-
-  bot.callbackQuery(/^bx:cp:(.+)$/, async (ctx) => {
+  bot.callbackQuery(/^bx:(?:pay|cp):(.+)$/, async (ctx) => {
     if (!ctx.from || !ctx.match) return;
     const code = ctx.match[1];
     const deal = await prisma.deal.findUnique({ where: { dealCode: code } });
@@ -872,10 +945,46 @@ export function createMainBot(): Bot<Context> {
     const u = await requireUser(ctx);
     if (!u) return;
     const deal = await prisma.deal.findUnique({ where: { dealCode: ctx.match[1] } });
+    if (!deal || deal.buyerId !== u.id) {
+      await ctx.answerCallbackQuery({ text: "Only the buyer can release", show_alert: true });
+      return;
+    }
+    if (deal.status !== "item_delivered") {
+      await ctx.answerCallbackQuery({ text: "Not ready for release", show_alert: true });
+      return;
+    }
+    const amounts = resolveDealPaymentAmounts(deal);
+    await ctx.answerCallbackQuery();
+    const kb = new InlineKeyboard()
+      .text("Yes — release funds", `d:relok:${deal.dealCode}`)
+      .row()
+      .text("Cancel", `d:v:${deal.dealCode}`);
+    await ctx.reply(
+      [
+        "━━━━━━━━━━━━━━━━━━",
+        "OGMP MM — Release escrow",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        `Deal: ${deal.dealCode}`,
+        `Seller receives: ${formatCryptoAmount(amounts.sellerReceives)} ${deal.currency}`,
+        "",
+        "What: this sends crypto to the seller's wallet and closes the deal.",
+        "Safe: only confirm if you received everything as agreed.",
+        "Next: tap Yes — release funds, or Cancel.",
+      ].join("\n"),
+      { reply_markup: kb },
+    );
+  });
+
+  bot.callbackQuery(/^d:relok:(.+)$/, async (ctx) => {
+    if (!ctx.from || !ctx.match) return;
+    const u = await requireUser(ctx);
+    if (!u) return;
+    const deal = await prisma.deal.findUnique({ where: { dealCode: ctx.match[1] } });
     if (!deal) return;
     try {
       const d = await buyerConfirmRelease(u.id, deal.id);
-      await ctx.answerCallbackQuery({ text: "Processed" });
+      await ctx.answerCallbackQuery({ text: "Funds released" });
       await ctx.reply(await fmtDealCard(d.id, u.id), { parse_mode: "HTML" });
       const ns = nextStepForActorReply(d, u.id);
       if (ns) await ctx.reply(ns.text, { reply_markup: ns.kb });
@@ -933,36 +1042,7 @@ export function createMainBot(): Bot<Context> {
     const u = await findUserByTelegramId(BigInt(ctx.from.id));
     await ctx.answerCallbackQuery();
     if (!u) return;
-    const community = computeCommunityBadge(u);
-    const adminBadge = u.profileBadge?.trim() || "—";
-    const un = u.username ? `@${u.username}` : "no username";
-    await ctx.reply(
-      [
-        "━━━━━━━━━━━━━━━━━━",
-        "OGMP MM — Profile",
-        "━━━━━━━━━━━━━━━━━━",
-        "",
-        "What: your trading snapshot here.",
-        "Safe: badges don’t move funds — Deal Protection rules still apply per deal.",
-        "Next: My Deals to jump back in.",
-        "",
-        `User: ${u.firstName ?? "User"} (${un})`,
-        `Status: ${u.banned ? "Restricted" : "Active"}`,
-        `Completed deals: ${u.completedDeals}`,
-        `Total volume (USD field): ${u.totalVolumeUsd.toString()}`,
-        `Rating: ${u.reputationScore.toString()} ⭐`,
-        `Case holds (lifetime): ${u.disputedDeals}`,
-        `Joined: ${u.joinedAt.toISOString().slice(0, 10)}`,
-        `Community tier: ${community}`,
-        `Admin badge: ${adminBadge}`,
-        "",
-        "Community:",
-        "Part of the 1,100+ member OGMP network",
-        "",
-        TRUST_OPS_FOOTER,
-      ].join("\n"),
-      { reply_markup: new InlineKeyboard().text("My Deals", "m:deals").text("Back", "m:menu") },
-    );
+    await replyUserProfile(ctx, u);
   });
 
   bot.callbackQuery(/^m:join$/, async (ctx) => {
@@ -1004,34 +1084,24 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     await ctx.answerCallbackQuery();
-    const kb = new InlineKeyboard()
-      .text("Dashboard", "a:dash")
-      .row()
-      .text("Active deals", "a:act")
-      .text("Open cases", "a:oc")
-      .row()
-      .text("Release requests", "a:relq")
-      .text("Disputed deals", "a:dis")
-      .row()
-      .text("Users", "a:users")
-      .text("Broadcast", "a:bc:help")
-      .row()
-      .text("Export CSV", "a:csv")
-      .text("Gateway", "a:gw:menu")
-      .row()
-      .text("Force release (reply id next)", "a:fr")
-      .text("Force refund", "a:fref");
+    await ctx.reply(ADMIN_PANEL_INTRO, { reply_markup: adminMenuKeyboard() });
+  });
+
+  bot.callbackQuery(/^a:fr$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    await ctx.answerCallbackQuery();
     await ctx.reply(
-      [
-        "━━━━━━━━━━━━━━━━━━",
-        "OGMP MM — Admin Dashboard",
-        "━━━━━━━━━━━━━━━━━━",
-        "",
-        "Pick a tool below. Dashboard shows live counters.",
-        "",
-        TRUST_OPS_FOOTER,
-      ].join("\n"),
-      { reply_markup: kb },
+      "Force release: `/admin_release DEALCODE`\n\nUse when escrow should pay out despite a stuck Buyer Review (document in admin notes).",
+      { parse_mode: "Markdown", reply_markup: new InlineKeyboard().text("« Admin", "m:admin") },
+    );
+  });
+
+  bot.callbackQuery(/^a:fref$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      "Force refund: `/admin_refund DEALCODE`\n\nUse when funds should return to the buyer per your policy.",
+      { parse_mode: "Markdown", reply_markup: new InlineKeyboard().text("« Admin", "m:admin") },
     );
   });
 
@@ -1054,6 +1124,7 @@ export function createMainBot(): Bot<Context> {
         `Completed deals: ${s.completedDeals}`,
         `Users: ${s.totalUsers}`,
         `Fees (released deals, sum): ${s.feesEarnedApprox}`,
+        `Pending payouts: ${s.pendingPayouts}`,
         "",
         TRUST_OPS_FOOTER,
       ].join("\n"),
@@ -1063,8 +1134,9 @@ export function createMainBot(): Bot<Context> {
           .text("Open cases", "a:oc")
           .row()
           .text("Release requests", "a:relq")
-          .text("Broadcast", "a:bc:help")
+          .text("Pending payouts", "a:pay")
           .row()
+          .text("Broadcast", "a:bc:help")
           .text("Export CSV", "a:csv")
           .text("Gateway", "a:gw:menu")
           .row()
@@ -1131,6 +1203,53 @@ export function createMainBot(): Bot<Context> {
     });
     await ctx.answerCallbackQuery();
     await ctx.reply(deals.length ? deals.map((d) => `${d.dealCode}`).join("\n") : "No release requests.");
+  });
+
+  bot.callbackQuery(/^a:pay$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const rows = await listAdminPayoutQueue(15);
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      [
+        "━━━━━━━━━━━━━━━━━━",
+        "OGMP MM — Payout queue",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        formatAdminPayoutList(rows),
+        "",
+        "Commands:",
+        "`/admin_retry_payout DEALCODE` — resend NOWPayments payout",
+        "`/admin_payout_update PAYOUT_UUID [tx_hash]` — mark completed manually",
+        "",
+        "Auto-release is on by default; this queue is for failures or manual fixes.",
+      ].join("\n"),
+      {
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard().text("« Admin", "m:admin"),
+      },
+    );
+  });
+
+  bot.callbackQuery(/^a:adm$/, async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const ids = getAllAdminTelegramIds();
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      [
+        "━━━━━━━━━━━━━━━━━━",
+        "OGMP MM — Admins",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        ids.length ? ids.map((id) => `• ${id}`).join("\n") : "(none configured)",
+        "",
+        "Env (restart required): `ADMIN_IDS=123,456`",
+        "Bot (instant):",
+        "`/admin_add TELEGRAM_ID`",
+        "`/admin_remove TELEGRAM_ID`",
+        "`/admin_list`",
+      ].join("\n"),
+      { parse_mode: "Markdown", reply_markup: new InlineKeyboard().text("« Admin", "m:admin") },
+    );
   });
 
   bot.callbackQuery(/^a:users$/, async (ctx) => {
@@ -1262,16 +1381,7 @@ export function createMainBot(): Bot<Context> {
       await ctx.reply("Usage: `/join <invite_token>`");
       return;
     }
-    try {
-      const deal = await joinDealByToken(user, token);
-      await ctx.reply(`Joined deal ${deal.dealCode}.`);
-      await ctx.reply(await fmtDealCard(deal.id, user.id), { parse_mode: "HTML" });
-      await ctx.reply("Next: both sides accept terms.", {
-        reply_markup: joinSuccessKeyboard(deal.dealCode),
-      });
-    } catch (e) {
-      await ctx.reply(`❌ ${String((e as Error).message)}`);
-    }
+    await tryJoinDealByToken(ctx, user, token);
   });
 
   bot.command("help", async (ctx) => {
@@ -1300,40 +1410,21 @@ export function createMainBot(): Bot<Context> {
       await ctx.reply("Please /start and accept terms first.");
       return;
     }
-    await clearActiveDealRoom(BigInt(ctx.from.id));
-    await setCreateWizard(BigInt(ctx.from.id), { step: "role" });
-    await ctx.reply("Select your role:", {
-      reply_markup: new InlineKeyboard()
-        .text("I am the Buyer", "w:role:buyer")
-        .text("I am the Seller", "w:role:seller"),
-    });
+    await startCreateDealFlow(ctx, BigInt(ctx.from.id));
   });
 
   bot.command("deals", async (ctx) => {
     if (!ctx.from) return;
     const u = await findUserByTelegramId(BigInt(ctx.from.id));
     if (!u) return;
-    const deals = await prisma.deal.findMany({
-      where: { OR: [{ buyerId: u.id }, { sellerId: u.id }, { creatorId: u.id }] },
-      orderBy: { createdAt: "desc" },
-      take: 15,
-    });
-    if (!deals.length) {
-      await ctx.reply("No deals.");
-      return;
-    }
-    const kb = new InlineKeyboard();
-    for (const d of deals) kb.text(`${d.dealCode}`, `d:v:${d.dealCode}`).row();
-    await ctx.reply("Tap a deal:", { reply_markup: kb });
+    await replyMyDealsList(ctx, u, true);
   });
 
   bot.command("profile", async (ctx) => {
     if (!ctx.from) return;
     const u = await findUserByTelegramId(BigInt(ctx.from.id));
     if (!u) return;
-    await ctx.reply(
-      `⭐ Reputation ${u.reputationScore.toString()} · Completed ${u.completedDeals} · Disputes ${u.disputedDeals}`,
-    );
+    await replyUserProfile(ctx, u);
   });
 
   bot.command("terms", async (ctx) => {
@@ -1403,14 +1494,7 @@ export function createMainBot(): Bot<Context> {
       await ctx.reply("Forbidden");
       return;
     }
-    await ctx.reply("Admin:", {
-      reply_markup: new InlineKeyboard()
-        .text("Active deals", "a:act")
-        .text("Disputed", "a:dis")
-        .row()
-        .text("Export CSV", "a:csv")
-        .text("Gateway settings", "a:gw:menu"),
-    });
+    await ctx.reply(ADMIN_PANEL_INTRO, { reply_markup: adminMenuKeyboard() });
   });
 
   /** Network presets for wizard */
@@ -1452,6 +1536,17 @@ export function createMainBot(): Bot<Context> {
     }
     const draft = toCreateDealInput(w, fp);
     const customTerms = !draft.dealTerms.includes("Party-agreed additions: none");
+    const preview = await quoteDealPaymentTotals({
+      amount: draft.amount,
+      currency: draft.currency,
+      network: draft.network,
+      feePayer: draft.feePayer,
+    });
+    const feeLines = formatFeeBreakdownLines({
+      currency: draft.currency,
+      network: draft.network,
+      amounts: preview,
+    });
     await setCreateWizard(BigInt(ctx.from.id), { step: "confirm", draft });
     await ctx.answerCallbackQuery();
     await ctx.reply(
@@ -1459,8 +1554,9 @@ export function createMainBot(): Bot<Context> {
         "*Confirm deal*",
         `Role: ${draft.creatorRole}`,
         `Title: ${draft.title}`,
-        `Amount: ${draft.amount} ${draft.currency} (${draft.network})`,
-        `Fee payer: ${draft.feePayer}`,
+        "",
+        ...feeLines,
+        "",
         `Written party terms / guarantees: ${customTerms ? "Yes (see Terms on the deal card)" : "No — standard escrow wording only"}`,
       ].join("\n"),
       {
@@ -1507,6 +1603,7 @@ export function createMainBot(): Bot<Context> {
   bot.on("message:text", async (ctx, next) => {
     if (!ctx.from || ctx.message.text.startsWith("/")) return next();
     if (await getActiveDealRoom(BigInt(ctx.from.id))) return next();
+    if (await handleSellerPayoutAddressMessage(ctx, BigInt(ctx.from.id), ctx.message.text)) return;
     const tid = BigInt(ctx.from.id);
     const pendingDealId = await peekReviewTextWait(tid);
     if (!pendingDealId) return next();
@@ -1705,6 +1802,80 @@ export function createMainBot(): Bot<Context> {
       throw e;
     }
     await ctx.reply("✅ Review saved. Thank you for helping keep OGMP MM trusted.");
+  });
+
+  bot.command("admin_add", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const tid = ctx.message?.text?.split(/\s+/)[1];
+    if (!tid || !/^\d+$/.test(tid)) {
+      await ctx.reply("Usage: `/admin_add TELEGRAM_ID`", { parse_mode: "Markdown" });
+      return;
+    }
+    try {
+      await addExtraAdmin(BigInt(ctx.from.id), BigInt(tid));
+      await ctx.reply(`✅ Added admin: \`${tid}\``, { parse_mode: "Markdown" });
+    } catch (e) {
+      await ctx.reply(replyTextForCaughtError(e));
+    }
+  });
+
+  bot.command("admin_remove", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const tid = ctx.message?.text?.split(/\s+/)[1];
+    if (!tid || !/^\d+$/.test(tid)) {
+      await ctx.reply("Usage: `/admin_remove TELEGRAM_ID`", { parse_mode: "Markdown" });
+      return;
+    }
+    try {
+      await removeExtraAdmin(BigInt(ctx.from.id), BigInt(tid));
+      await ctx.reply(`✅ Removed bot admin: \`${tid}\``, { parse_mode: "Markdown" });
+    } catch (e) {
+      await ctx.reply(replyTextForCaughtError(e));
+    }
+  });
+
+  bot.command("admin_list", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const ids = getAllAdminTelegramIds();
+    await ctx.reply(
+      ids.length ? `Admins:\n${ids.map((id) => `• ${id}`).join("\n")}` : "No admins configured.",
+    );
+  });
+
+  bot.command("admin_retry_payout", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const code = ctx.message?.text?.split(/\s+/)[1];
+    if (!code) {
+      await ctx.reply("Usage: `/admin_retry_payout DEALCODE`", { parse_mode: "Markdown" });
+      return;
+    }
+    try {
+      await adminRetryPayout(code, BigInt(ctx.from.id));
+      await ctx.reply(`✅ Payout retry queued for ${code}.`);
+    } catch (e) {
+      await ctx.reply(replyTextForCaughtError(e));
+    }
+  });
+
+  bot.command("admin_payout_update", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    const parts = ctx.message?.text?.trim().split(/\s+/) ?? [];
+    const payoutId = parts[1];
+    const txHash = parts[2];
+    if (!payoutId) {
+      await ctx.reply("Usage: `/admin_payout_update PAYOUT_UUID [tx_hash]`");
+      return;
+    }
+    try {
+      await adminMarkPayoutCompleted({
+        adminTelegramId: BigInt(ctx.from.id),
+        payoutId,
+        txHash: txHash && !txHash.startsWith("/") ? txHash : undefined,
+      });
+      await ctx.reply("✅ Payout marked completed.");
+    } catch (e) {
+      await ctx.reply(replyTextForCaughtError(e));
+    }
   });
 
   bot.command("admin_release", async (ctx) => {

@@ -7,21 +7,24 @@ import { appendDealTimelineEvent } from "../dealTimeline/timeline.service.js";
 import { assertValidDealTransition } from "../../services/escrow-state-machine.js";
 import { logger } from "../../utils/logger.js";
 import { createHash } from "node:crypto";
+import type { PaymentStatusResult } from "../../payments/payment-provider.types.js";
+import {
+  notifyBuyerPaymentConfirmedIfNeeded,
+  notifyBuyerPaymentDetectedIfNeeded,
+  notifyBuyerPaymentPartialIfNeeded,
+} from "./payment-notify.service.js";
+import {
+  isPaymentConfirmedForEscrow,
+  shouldAdvancePaymentStatus,
+} from "./payment-status-rank.js";
+import { unmarkDealHotPaymentPoll } from "./hot-payment-poll.service.js";
 
 export function isPrismaUniqueConstraintError(e: unknown): boolean {
   return typeof e === "object" && e !== null && "code" in e && (e as { code: string }).code === "P2002";
 }
 
 function mapProviderStatus(
-  s:
-    | "pending"
-    | "detecting"
-    | "confirming"
-    | "confirmed"
-    | "underpaid"
-    | "overpaid"
-    | "expired"
-    | "failed",
+  s: PaymentStatusResult["status"],
 ): PaymentRecordStatus {
   switch (s) {
     case "pending":
@@ -49,26 +52,55 @@ async function loadDeal(dealId: string) {
   return prisma.deal.findUnique({ where: { id: dealId } });
 }
 
-export async function applyPaymentSyncForDeal(dealId: string): Promise<void> {
-  const payment = await prisma.payment.findFirst({
-    where: { dealId },
-    orderBy: { createdAt: "desc" },
+async function promoteDealToFunded(
+  dealId: string,
+  txHash: string | undefined,
+): Promise<boolean> {
+  let deal = await loadDeal(dealId);
+  if (!deal) return false;
+
+  if (deal.status === "waiting_payment") {
+    await transitionDealStatus(deal.id, "waiting_payment", "payment_detected");
+    await appendDealTimelineEvent({
+      dealId: deal.id,
+      eventType: "payment_detected",
+      metadata: { phase: "confirmed" },
+    });
+    deal = await loadDeal(dealId);
+    if (!deal) return false;
+  }
+
+  if (deal.status !== "payment_detected") {
+    return deal.status === "funded";
+  }
+
+  await transitionDealStatus(deal.id, "payment_detected", "funded", {
+    fundedAt: new Date(),
+    txHash: txHash ?? deal.txHash ?? undefined,
   });
-  if (!payment) return;
-
-  const provider = getPaymentProvider();
-  const status = await provider.checkPaymentStatus(payment);
-
-  await prisma.payment.update({
-    where: { id: payment.id },
-    data: {
-      status: mapProviderStatus(status.status),
-      receivedAmount: status.receivedAmount,
-      txHash: status.txHash,
-      confirmations: status.confirmations,
-    },
+  await appendDealTimelineEvent({
+    dealId: deal.id,
+    eventType: "payment_confirmed",
+    metadata: { txHash },
   });
+  await writeAuditLog({ eventType: "payment_confirmed", dealId, metadata: { txHash } });
+  return true;
+}
 
+async function runDeliveryFlowIfNeeded(dealId: string): Promise<void> {
+  const deal = await loadDeal(dealId);
+  if (!deal || deal.status !== "funded") return;
+  const { onPaymentConfirmedDeliveryFlow } = await import("../../services/delivery.service.js");
+  await onPaymentConfirmedDeliveryFlow(dealId);
+}
+
+/**
+ * Apply provider status to deal transitions (shared by API poll + IPN webhook).
+ */
+export async function applyPaymentStatusToDeal(
+  dealId: string,
+  status: PaymentStatusResult,
+): Promise<void> {
   let deal = await loadDeal(dealId);
   if (!deal) return;
   if (
@@ -96,6 +128,7 @@ export async function applyPaymentSyncForDeal(dealId: string): Promise<void> {
         metadata: { reason: status.status === "expired" ? "payment_expired" : "payment_failed" },
       });
     }
+    await unmarkDealHotPaymentPoll(dealId);
     return;
   }
 
@@ -113,6 +146,7 @@ export async function applyPaymentSyncForDeal(dealId: string): Promise<void> {
       dealId,
       metadata: { received: status.receivedAmount },
     });
+    await notifyBuyerPaymentPartialIfNeeded(dealId);
     return;
   }
 
@@ -120,7 +154,9 @@ export async function applyPaymentSyncForDeal(dealId: string): Promise<void> {
     return;
   }
 
-  if (status.status === "confirming" || status.status === "detecting") {
+  const escrowConfirmed = isPaymentConfirmedForEscrow(status);
+
+  if (!escrowConfirmed && (status.status === "confirming" || status.status === "detecting")) {
     deal = await loadDeal(dealId);
     if (!deal) return;
     if (deal.status === "waiting_payment") {
@@ -131,42 +167,64 @@ export async function applyPaymentSyncForDeal(dealId: string): Promise<void> {
         metadata: { phase: status.status, confirmations: status.confirmations },
       });
     }
-    await writeAuditLog({ eventType: "payment_detected", dealId, metadata: { confirmations: status.confirmations } });
+    await writeAuditLog({
+      eventType: "payment_detected",
+      dealId,
+      metadata: { confirmations: status.confirmations },
+    });
+    await notifyBuyerPaymentDetectedIfNeeded(dealId);
     return;
   }
 
-  if (status.status === "confirmed") {
-    deal = await loadDeal(dealId);
-    if (!deal) return;
-    if (deal.status === "waiting_payment") {
-      await transitionDealStatus(deal.id, "waiting_payment", "payment_detected");
-      await appendDealTimelineEvent({
-        dealId: deal.id,
-        eventType: "payment_detected",
-        metadata: { phase: "confirmed", confirmations: status.confirmations },
-      });
-    }
-    deal = await loadDeal(dealId);
-    if (!deal) return;
-    let becameFunded = false;
-    if (deal.status === "payment_detected") {
-      await transitionDealStatus(deal.id, "payment_detected", "funded", {
-        fundedAt: new Date(),
-        txHash: status.txHash ?? deal.txHash,
-      });
-      await appendDealTimelineEvent({
-        dealId: deal.id,
-        eventType: "payment_confirmed",
-        metadata: { txHash: status.txHash },
-      });
-      becameFunded = true;
-    }
-    await writeAuditLog({ eventType: "payment_confirmed", dealId, metadata: { txHash: status.txHash } });
+  if (escrowConfirmed) {
+    const becameFunded = await promoteDealToFunded(dealId, status.txHash);
     if (becameFunded) {
-      const { onPaymentConfirmedDeliveryFlow } = await import("../../services/delivery.service.js");
-      await onPaymentConfirmedDeliveryFlow(dealId);
+      await notifyBuyerPaymentConfirmedIfNeeded(dealId);
+      await runDeliveryFlowIfNeeded(dealId);
+      await unmarkDealHotPaymentPoll(dealId);
+      return;
     }
+    await runDeliveryFlowIfNeeded(dealId);
+    await unmarkDealHotPaymentPoll(dealId);
   }
+}
+
+export async function applyPaymentSyncForDeal(dealId: string): Promise<void> {
+  const payment = await prisma.payment.findFirst({
+    where: { dealId },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!payment) return;
+
+  const provider = getPaymentProvider();
+  let status: PaymentStatusResult;
+  try {
+    status = await provider.checkPaymentStatus(payment);
+  } catch (e) {
+    logger.error("payment_status_api_failed", { dealId, err: String(e) });
+    throw e;
+  }
+
+  const mapped = mapProviderStatus(status.status);
+  if (shouldAdvancePaymentStatus(payment.status, status.status)) {
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: {
+        status: mapped,
+        receivedAmount: status.receivedAmount,
+        txHash: status.txHash,
+        confirmations: status.confirmations,
+      },
+    });
+  } else {
+    logger.info("payment_status_api_ignored_downgrade", {
+      dealId,
+      current: payment.status,
+      api: status.status,
+    });
+  }
+
+  await applyPaymentStatusToDeal(dealId, status);
 }
 
 export async function processWebhookPayload(
@@ -213,18 +271,35 @@ export async function processWebhookPayload(
     return { ok: true, message: "unknown_payment" };
   }
 
-  await prisma.payment.update({
-    where: { id: payment.id },
-    data: {
-      status: mapProviderStatus(normalized.result.status),
-      receivedAmount: normalized.result.receivedAmount,
-      txHash: normalized.result.txHash,
-      confirmations: normalized.result.confirmations,
-      webhookDeliveredAt: new Date(),
-      rawPayload: parsed as object,
-    },
+  const mapped = mapProviderStatus(normalized.result.status);
+  if (shouldAdvancePaymentStatus(payment.status, normalized.result.status)) {
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: {
+        status: mapped,
+        receivedAmount: normalized.result.receivedAmount,
+        txHash: normalized.result.txHash,
+        confirmations: normalized.result.confirmations,
+        webhookDeliveredAt: new Date(),
+        rawPayload: parsed as object,
+      },
+    });
+  } else {
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: {
+        webhookDeliveredAt: new Date(),
+        rawPayload: parsed as object,
+      },
+    });
+  }
+
+  logger.info("payment_webhook_applied", {
+    dealId: payment.dealId,
+    status: normalized.result.status,
+    received: normalized.result.receivedAmount,
   });
 
-  await applyPaymentSyncForDeal(payment.dealId);
+  await applyPaymentStatusToDeal(payment.dealId, normalized.result);
   return { ok: true };
 }

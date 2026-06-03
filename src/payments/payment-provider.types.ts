@@ -7,6 +7,10 @@ export type PaymentAddressResult = {
   expiresAt?: Date;
   /** When omitted, the deal flow uses `SupportedCoin.confirmationsRequired`. */
   requiredConfirmations?: number;
+  /** Final crypto amount the buyer must send (NOWPayments `pay_amount` when available). */
+  buyerPayAmount?: string;
+  /** Invoice sent to the processor before their fees (NOWPayments `price_amount`). */
+  invoiceAmount?: string;
 };
 
 export type PaymentStatusResult = {

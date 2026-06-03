@@ -1,6 +1,9 @@
 import { Prisma } from "@prisma/client";
-import { prisma } from "../../db/prisma.js";
 import { logger } from "../../utils/logger.js";
+
+async function db() {
+  return (await import("../../db/prisma.js")).prisma;
+}
 
 export async function logAdminAction(params: {
   adminTelegramId: bigint;
@@ -10,7 +13,7 @@ export async function logAdminAction(params: {
   metadata?: Record<string, unknown>;
 }): Promise<void> {
   try {
-    await prisma.adminActionLog.create({
+    await (await db()).adminActionLog.create({
       data: {
         adminTelegramId: params.adminTelegramId,
         action: params.action,

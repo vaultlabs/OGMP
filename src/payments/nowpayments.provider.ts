@@ -3,6 +3,8 @@ import type { Deal, Payment, Payout } from "@prisma/client";
 import type { PaymentAddressResult, PaymentProvider, PaymentStatusResult, PayoutResult } from "./payment-provider.types.js";
 import { loadConfig } from "../config/index.js";
 import { logger } from "../utils/logger.js";
+import { getNowpaymentsBearerToken } from "./nowpayments-auth.js";
+import { formatPayoutAmount } from "./payout-amount.js";
 
 const DEFAULT_API_BASE = "https://api.nowpayments.io";
 
@@ -39,7 +41,7 @@ function toNum(v: unknown): number {
   return 0;
 }
 
-function mapCurrencyNetworkToPayCurrency(currency: string, network: string): string {
+export function mapCurrencyNetworkToPayCurrency(currency: string, network: string): string {
   const c = currency.trim().toUpperCase();
   const n = network.trim().toUpperCase();
   if (c === "USDT" && n === "TRC20") return "usdttrc20";
@@ -116,9 +118,13 @@ function mapNowPaymentsPaymentToResult(
       status = actuallyPaid > 0 ? "detecting" : "pending";
       break;
     case "confirming":
-    case "confirmed":
     case "sending":
       status = "confirming";
+      break;
+    case "confirmed":
+      if (payAmount > 0 && actuallyPaid + 1e-12 >= payAmount * 0.995) status = "confirmed";
+      else if (actuallyPaid > 0) status = "confirming";
+      else status = "pending";
       break;
     case "partially_paid":
       status = "underpaid";
@@ -220,12 +226,13 @@ export class NowPaymentsProvider implements PaymentProvider {
 
   async createPaymentAddress(
     deal: Deal,
-    expectedAmount: string,
+    /** Invoice amount before NOWPayments adds processor fees (deal + OGMP fee slice). */
+    invoiceAmount: string,
     currency: string,
     network: string,
   ): Promise<PaymentAddressResult> {
     const { apiKey, publicBase } = this.requireKeys();
-    let pricing = nowpaymentsPriceAndPayForCreate({ currency, network, expectedAmount });
+    let pricing = nowpaymentsPriceAndPayForCreate({ currency, network, expectedAmount: invoiceAmount });
     const orderBase = `${this.name}:${deal.id}:${deal.version}`;
     let orderId = orderBase;
     const ipnUrl = `${publicBase}/webhooks/payments/${this.name}`;
@@ -242,6 +249,7 @@ export class NowPaymentsProvider implements PaymentProvider {
           price_amount: pricing.price_amount,
           price_currency: pricing.price_currency,
           pay_currency: pricing.pay_currency,
+          is_fee_paid_by_user: true,
           ipn_callback_url: ipnUrl,
           order_id: orderId,
           order_description: `OGMP ${deal.dealCode}`.slice(0, 200),
@@ -272,12 +280,16 @@ export class NowPaymentsProvider implements PaymentProvider {
           typeof reqConf === "number" && Number.isFinite(reqConf) && reqConf > 0
             ? Math.floor(reqConf)
             : undefined;
+        const payAmount = toNum(data.pay_amount);
+        const priceAmount = toNum(data.price_amount);
 
         return {
           address: addr,
           reference: ref,
           providerRef: ref,
           requiredConfirmations,
+          buyerPayAmount: payAmount > 0 ? String(payAmount) : undefined,
+          invoiceAmount: priceAmount > 0 ? String(priceAmount) : invoiceAmount,
         };
       }
 
@@ -341,12 +353,99 @@ export class NowPaymentsProvider implements PaymentProvider {
     return mapNowPaymentsPaymentToResult(data, Math.max(1, payment.requiredConfirmations));
   }
 
-  async createPayout(_payout: Payout, _destinationAddress: string): Promise<PayoutResult> {
-    void _payout;
-    void _destinationAddress;
-    logger.warn("nowpayments_create_payout_not_implemented");
-    throw new Error(
-      "NOWPayments mass payouts are not automated in OGMP yet. Complete the payout in your NOWPayments dashboard and update the Payout row manually if needed.",
-    );
+  async createPayout(payout: Payout, destinationAddress: string): Promise<PayoutResult> {
+    const { apiKey, publicBase } = this.requireKeys();
+    const cfg = loadConfig();
+    const bearer = await getNowpaymentsBearerToken();
+    const currency = mapCurrencyNetworkToPayCurrency(payout.currency, payout.network);
+    const amount = formatPayoutAmount(payout.amount);
+    const ipnUrl = `${publicBase}/webhooks/payouts/${this.name}`;
+    const uniqueExternalId = payout.id;
+
+    const res = await fetch(`${this.apiBase()}/v1/payout`, {
+      method: "POST",
+      headers: {
+        "x-api-key": apiKey,
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${bearer}`,
+      },
+      body: JSON.stringify({
+        ipn_callback_url: ipnUrl,
+        withdrawals: [
+          {
+            address: destinationAddress.trim(),
+            currency,
+            amount: Number(amount),
+            ipn_callback_url: ipnUrl,
+            unique_external_id: uniqueExternalId,
+            payout_description: `OGMP ${payout.dealId}`.slice(0, 200),
+          },
+        ],
+      }),
+    });
+    const text = await res.text();
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      throw new Error(`NOWPayments create payout: non-JSON (${res.status})`);
+    }
+    if (!res.ok) {
+      const msg =
+        (typeof data.message === "string" && data.message) ||
+        (typeof data.error === "string" && data.error) ||
+        text.slice(0, 400);
+      throw new Error(`NOWPayments create payout failed (${res.status}): ${msg}`);
+    }
+
+    const withdrawals = Array.isArray(data.withdrawals) ? data.withdrawals : [];
+    const w0 = (withdrawals[0] ?? {}) as Record<string, unknown>;
+    const withdrawalId =
+      (typeof w0.id === "string" && w0.id) ||
+      (typeof w0.id === "number" && String(w0.id)) ||
+      (typeof data.id === "string" && data.id) ||
+      (typeof data.id === "number" && String(data.id));
+    if (!withdrawalId) {
+      logger.error("nowpayments_create_payout_no_id", { keys: Object.keys(data) });
+      throw new Error("NOWPayments create payout response missing withdrawal id");
+    }
+
+    const verifyCode = cfg.NOWPAYMENTS_PAYOUT_VERIFY_CODE?.trim();
+    if (verifyCode) {
+      const vRes = await fetch(`${this.apiBase()}/v1/payout/${encodeURIComponent(withdrawalId)}/verify`, {
+        method: "POST",
+        headers: {
+          "x-api-key": apiKey,
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${bearer}`,
+        },
+        body: JSON.stringify({ verification_code: verifyCode }),
+      });
+      if (!vRes.ok) {
+        const vText = await vRes.text();
+        logger.warn("nowpayments_payout_verify_failed", {
+          withdrawalId,
+          status: vRes.status,
+          body: vText.slice(0, 300),
+        });
+      }
+    } else {
+      logger.warn("nowpayments_payout_verify_skipped", {
+        help: "Set NOWPAYMENTS_PAYOUT_VERIFY_CODE (2FA or email code) so payouts leave CREATING status",
+      });
+    }
+
+    const rawStatus = typeof w0.status === "string" ? w0.status.toUpperCase() : "";
+    const hash = typeof w0.hash === "string" ? w0.hash : undefined;
+    let status: PayoutResult["status"] = "processing";
+    if (rawStatus === "FINISHED") status = "completed";
+    else if (rawStatus === "FAILED" || rawStatus === "REJECTED") status = "failed";
+
+    return {
+      payoutId: withdrawalId,
+      txHash: hash,
+      status,
+      raw: data,
+    };
   }
 }

@@ -37,7 +37,11 @@ const envSchema = z
     /** Override API host (default https://api.nowpayments.io). */
     NOWPAYMENTS_API_BASE: z.preprocess(emptyToUndefinedUrl, z.string().url().optional()),
     PUBLIC_BASE_URL: z.preprocess(emptyToUndefinedUrl, z.string().url().optional()),
-    AUTO_RELEASE_ENABLED: z.coerce.boolean().default(false),
+    AUTO_RELEASE_ENABLED: z.coerce.boolean().default(true),
+    NOWPAYMENTS_EMAIL: z.string().optional(),
+    NOWPAYMENTS_PASSWORD: z.string().optional(),
+    /** 2FA or email verification code for POST /v1/payout/{id}/verify (required for unattended payouts). */
+    NOWPAYMENTS_PAYOUT_VERIFY_CODE: z.string().optional(),
     /** After escrow payment confirms, DM buyer each delivery file_id from the deal (if false, only a Download button). */
     AUTO_SEND_DELIVERY_AFTER_PAYMENT: z.coerce.boolean().default(true),
     MOCK_WEBHOOK_SECRET: z.string().optional(),
@@ -54,6 +58,8 @@ const envSchema = z
     PLATFORM_FEE_PERCENT: z.string().optional(),
     MIN_FEE: z.string().optional(),
     MAX_FEE: z.string().optional(),
+    /** NOWPayments service fee assumption for pre-payment quotes (default 1% = 0.01). */
+    NOWPAYMENTS_SERVICE_FEE_PERCENT: z.string().optional(),
     /** Run BullMQ notification worker in-process */
     NOTIFICATION_WORKER_ENABLED: z.coerce.boolean().default(true),
     /** Require joining OGMP gateway before using the escrow bot (overridable via BotSetting). */
@@ -98,22 +104,15 @@ const envSchema = z
 
 export type AppConfig = z.infer<typeof envSchema>;
 
-function parseAdminIds(raw: string): bigint[] {
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => {
-      try {
-        return BigInt(s);
-      } catch {
-        return null;
-      }
-    })
-    .filter((x): x is bigint => x !== null);
-}
-
 let cached: AppConfig | null = null;
+
+import {
+  isAdminTelegramId,
+  getAllAdminTelegramIds,
+  refreshExtraAdminIdsCache,
+  addExtraAdmin,
+  removeExtraAdmin,
+} from "../modules/admin/admin-ids.service.js";
 
 /** Filled from report bot `getMe` on start when `REPORT_BOT_USERNAME` is unset (deep links). */
 let cachedReportBotTelegramUsername: string | undefined;
@@ -160,14 +159,11 @@ export function getReportBotToken(): string | undefined {
   return t && t.length > 0 ? t : undefined;
 }
 
-export function getAdminTelegramIds(): Set<string> {
-  const cfg = loadConfig();
-  const merged = [cfg.ADMIN_IDS, cfg.ADMIN_TELEGRAM_IDS].filter(Boolean).join(",");
-  return new Set(parseAdminIds(merged).map((b) => b.toString()));
-}
+export { isAdminTelegramId, getAllAdminTelegramIds, refreshExtraAdminIdsCache, addExtraAdmin, removeExtraAdmin };
 
-export function isAdminTelegramId(telegramId: bigint): boolean {
-  return getAdminTelegramIds().has(telegramId.toString());
+/** @deprecated use getAllAdminTelegramIds */
+export function getAdminTelegramIds(): Set<string> {
+  return new Set(getAllAdminTelegramIds());
 }
 
 export function getBlockedExtensions(): Set<string> {

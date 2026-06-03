@@ -6,13 +6,14 @@ import { logger } from "../utils/logger.js";
 import { transitionDealStatus } from "../modules/deals/deal.service.js";
 import { appendDealTimelineEvent } from "../modules/dealTimeline/timeline.service.js";
 import { countLockedDeliveryMessages } from "../modules/dealMessages/dealMessage.service.js";
+import { enqueueBuyerDeliverySend } from "../modules/notifications/notificationQueue.service.js";
 import {
-  enqueueBuyerDeliverySend,
-  enqueueDmWithButtons,
-  enqueueDealParticipantNotify,
-} from "../modules/notifications/notificationQueue.service.js";
+  notifyDealParticipantCritical,
+  notifyDmWithButtonsCritical,
+} from "../modules/notifications/critical-notify.service.js";
 import { userFacingDealStatus } from "../modules/deals/user-facing-status.js";
 import { COMMUNITY_TRUST_LINE, DEAL_PROTECTION_BEFORE_PAY, TRUST_OPS_FOOTER } from "../bots/mainBot/trust-copy.js";
+import { formatCryptoAmount, resolveDealPaymentAmounts } from "./fee.service.js";
 
 const DIV = "━━━━━━━━━━━━━━━━━━";
 
@@ -50,7 +51,12 @@ export function sellerFileSecuredKeyboard(dealCode: string): InlineKeyboard {
 
 export function buyerPaymentRequiredText(params: {
   dealCode: string;
-  amount: string;
+  /** Exact amount the buyer must send (includes fee when buyer/split pays). */
+  payAmount: string;
+  dealAmount: string;
+  sellerReceives: string;
+  escrowFee: string;
+  feePayer: string;
   currency: string;
   network: string;
   paymentAddress: string;
@@ -81,7 +87,11 @@ export function buyerPaymentRequiredText(params: {
     "",
     lockLine,
     "",
-    `Amount: ${params.amount} ${params.currency}`,
+    `Deal amount: ${params.dealAmount} ${params.currency}`,
+    `OGMP fee (1%): ${params.escrowFee} ${params.currency} (${params.feePayer})`,
+    "",
+    `Pay exactly: ${params.payAmount} ${params.currency}`,
+    `Seller receives on release: ${params.sellerReceives} ${params.currency}`,
     `Network: ${params.network}`,
     "",
     "Address:",
@@ -213,6 +223,7 @@ export async function notifyBuyerPaymentRequired(dealId: string): Promise<void> 
   });
   const pay = await prisma.payment.findFirst({ where: { dealId }, orderBy: { createdAt: "desc" } });
   if (!deal?.buyer || !deal.paymentAddress || !pay || !deal.sellerId) return;
+  const amounts = resolveDealPaymentAmounts(deal);
   const locked = await prisma.dealMessage.findMany({
     where: { dealId, lockedForBuyer: true, senderId: deal.sellerId },
     orderBy: { createdAt: "desc" },
@@ -221,7 +232,11 @@ export async function notifyBuyerPaymentRequired(dealId: string): Promise<void> 
   const names = locked.map((m: DealMessage) => m.fileName).filter(Boolean) as string[];
   const text = buyerPaymentRequiredText({
     dealCode: deal.dealCode,
-    amount: deal.amount.toString(),
+    payAmount: formatCryptoAmount(amounts.buyerPays),
+    dealAmount: formatCryptoAmount(amounts.dealAmount),
+    sellerReceives: formatCryptoAmount(amounts.sellerReceives),
+    escrowFee: formatCryptoAmount(amounts.escrowFee),
+    feePayer: amounts.feePayer,
     currency: deal.currency,
     network: deal.network,
     paymentAddress: deal.paymentAddress,
@@ -229,7 +244,7 @@ export async function notifyBuyerPaymentRequired(dealId: string): Promise<void> 
     lockedFileName: names[0],
     lockedFileCount: locked.length,
   });
-  await enqueueDmWithButtons({
+  await notifyDmWithButtonsCritical({
     chatId: deal.buyer.telegramId.toString(),
     text,
     buttons: buyerPaymentRequiredButtons(deal.dealCode),
@@ -271,9 +286,10 @@ export async function onPaymentConfirmedDeliveryFlow(dealId: string): Promise<vo
   const ufs = userFacingDealStatus(dealFresh, { hasLockedDelivery: false, paymentStatus: pay?.status ?? null });
 
   if (dealFresh.seller) {
-    await enqueueDealParticipantNotify({
+    await notifyDealParticipantCritical({
       targetTelegramId: dealFresh.seller.telegramId,
       text: sellerFundsSecuredText(dealFresh.dealCode),
+      buttons: [[{ text: "View deal", cb: `d:v:${dealFresh.dealCode}` }]],
     });
   }
 
@@ -281,7 +297,7 @@ export async function onPaymentConfirmedDeliveryFlow(dealId: string): Promise<vo
     const auto = loadConfig().AUTO_SEND_DELIVERY_AFTER_PAYMENT;
     if (lockedBefore > 0) {
       const text = buyerUnlockedText(dealFresh.dealCode);
-      await enqueueDmWithButtons({
+      await notifyDmWithButtonsCritical({
         chatId: dealFresh.buyer.telegramId.toString(),
         text: `${text}\n\nStatus: ${ufs}`,
         buttons: buyerUnlockedKeyboard(dealFresh.dealCode, !auto),
@@ -293,7 +309,7 @@ export async function onPaymentConfirmedDeliveryFlow(dealId: string): Promise<vo
         });
       }
     } else {
-      await enqueueDmWithButtons({
+      await notifyDmWithButtonsCritical({
         chatId: dealFresh.buyer.telegramId.toString(),
         text: `${buyerPaymentSecuredAwaitingDeliveryText(dealFresh.dealCode)}\n\nStatus: ${ufs}`,
         buttons: [
@@ -321,21 +337,42 @@ export async function resubmitSellerDeliveryNotify(dealId: string): Promise<void
   });
 }
 
-export function paymentNotDetectedBuyerText(): string {
-  return [
+export function paymentNotDetectedBuyerText(details?: {
+  dealCode: string;
+  expected: string;
+  currency: string;
+  network: string;
+  addressTail: string;
+  provider: string;
+}): string {
+  const lines = [
     "What: payment not detected yet.",
     "Safe: nothing is released; your wallet is unchanged by OGMP MM.",
     "Next: double-check amount, network, and address — then Check Payment again.",
     "",
+    "Only the buyer pays escrow. Use the exact address from Payment Required / View deal.",
+    "",
     "Never pay outside OGMP MM.",
-  ].join("\n");
+  ];
+  if (details) {
+    lines.splice(
+      4,
+      0,
+      `Deal: ${details.dealCode}`,
+      `Expected: ${details.expected} ${details.currency} (${details.network})`,
+      `Address ends: …${details.addressTail}`,
+      `Processor: ${details.provider}`,
+      "",
+    );
+  }
+  return lines.join("\n");
 }
 
 export function paymentDetectedWaitingText(): string {
   return [
     "What: payment detected — waiting for confirmations.",
     "Safe: Deal Protection keeps funds in escrow until confirmed.",
-    "Next: wait a moment, then Check Payment again — Delivery Vault unlocks automatically.",
+    "Next: you should get a Payment received DM shortly; vault unlocks automatically when confirmed.",
   ].join("\n");
 }
 

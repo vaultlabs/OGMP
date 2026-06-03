@@ -1,4 +1,5 @@
 import { prisma } from "../../db/prisma.js";
+import { countPendingPayouts } from "./admin-payouts.service.js";
 
 export type AdminDashboardSnapshot = {
   activeDeals: number;
@@ -10,6 +11,7 @@ export type AdminDashboardSnapshot = {
   completedDeals: number;
   totalUsers: number;
   feesEarnedApprox: string;
+  pendingPayouts: number;
 };
 
 export async function getAdminDashboardSnapshot(): Promise<AdminDashboardSnapshot> {
@@ -23,6 +25,7 @@ export async function getAdminDashboardSnapshot(): Promise<AdminDashboardSnapsho
     completedDeals,
     totalUsers,
     feeAgg,
+    pendingPayouts,
   ] = await Promise.all([
     prisma.deal.count({
       where: { status: { notIn: ["released", "refunded", "cancelled"] } },
@@ -40,6 +43,7 @@ export async function getAdminDashboardSnapshot(): Promise<AdminDashboardSnapsho
       where: { status: "released" },
       _sum: { feeAmount: true },
     }),
+    countPendingPayouts(),
   ]);
   return {
     activeDeals,
@@ -51,5 +55,6 @@ export async function getAdminDashboardSnapshot(): Promise<AdminDashboardSnapsho
     completedDeals,
     totalUsers,
     feesEarnedApprox: feeAgg._sum.feeAmount?.toString() ?? "0",
+    pendingPayouts,
   };
 }

@@ -26,8 +26,9 @@ export function nextStepForActorReply(
     case "payment_detected": {
       if (isSeller) {
         const text =
-          "What: Deal Protection is on — buyer pays after the Delivery Vault locks.\nSafe: your file stays locked until then.\nNext: Deal room → upload → lock.";
-        kb.text("Upload / Deal room", `dr:enter:${code}`).text("View deal", `d:v:${code}`);
+          "What: Deal Protection is on — buyer pays after the Delivery Vault locks.\nSafe: your file stays locked until then.\nNext: set payout wallet if needed, then Deal room → upload → lock.";
+        kb.text("Upload / Deal room", `dr:enter:${code}`).text("View deal", `d:v:${code}`).row();
+        kb.text("Set payout wallet", `spw:start:${code}`);
         return { text, kb };
       }
       if (isBuyer) {
@@ -58,7 +59,7 @@ export function nextStepForActorReply(
       if (isBuyer) {
         const text =
           "What: Buyer Review.\nSafe: escrow until you confirm.\nNext: Confirm Received — or Open Case for Case Review.";
-        kb.text("Confirm received", `d:rel:${code}`).text("Open Case", `d:rp:${code}`).row();
+        kb.text("Release to seller", `d:rel:${code}`).text("Open Case", `d:rp:${code}`).row();
         kb.text("Download files", `bx:dl:${code}`).text("Hold deal", `d:dp:${code}`);
         return { text, kb };
       }

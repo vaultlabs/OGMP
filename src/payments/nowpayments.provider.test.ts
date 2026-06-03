@@ -1,6 +1,5 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Deal } from "@prisma/client";
 import { resetConfigCacheForTests } from "../config/index.js";
 import {
   NowPaymentsProvider,

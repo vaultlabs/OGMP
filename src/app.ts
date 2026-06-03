@@ -2,10 +2,12 @@ import "dotenv/config";
 import { loadConfig, getReportBotToken, cacheReportBotTelegramUsername } from "./config/index.js";
 import { prisma } from "./db/prisma.js";
 import { initDefaultSettings } from "./services/bot-settings.service.js";
+import { refreshExtraAdminIdsCache } from "./modules/admin/admin-ids.service.js";
 import { createMainBot } from "./bots/mainBot/main-bot.js";
 import { createReportBot } from "./bots/reportBot/report-bot.js";
 import { startHttpServer } from "./server/http.js";
 import { runPaymentWatcherOnce } from "./jobs/paymentWatcher.job.js";
+import { runHotPaymentWatcherOnce } from "./jobs/hotPaymentWatcher.job.js";
 import { runExpiryWatcherOnce } from "./jobs/expiryWatcher.job.js";
 import { logger } from "./utils/logger.js";
 import { startNotificationWorker, stopNotificationWorker } from "./workers/notification.worker.js";
@@ -18,6 +20,7 @@ export async function startApp(): Promise<void> {
   loadConfig();
   await prisma.$connect();
   await initDefaultSettings();
+  await refreshExtraAdminIdsCache();
 
   const mainBot = createMainBot();
   startHttpServer(mainBot);
@@ -35,13 +38,18 @@ export async function startApp(): Promise<void> {
 
   const paymentTimer = setInterval(() => {
     void runPaymentWatcherOnce().catch((e) => logger.error("payment_watcher", { err: String(e) }));
-  }, 60_000);
+  }, 10_000);
+
+  const hotPaymentTimer = setInterval(() => {
+    void runHotPaymentWatcherOnce().catch((e) => logger.error("hot_payment_watcher", { err: String(e) }));
+  }, 5_000);
 
   const expiryTimer = setInterval(() => {
     void runExpiryWatcherOnce().catch((e) => logger.error("expiry_watcher", { err: String(e) }));
   }, 120_000);
 
   void runPaymentWatcherOnce().catch(() => {});
+  void runHotPaymentWatcherOnce().catch(() => {});
   void runExpiryWatcherOnce().catch(() => {});
 
   /** This app uses long polling (`bot.start()`). A leftover webhook in BotFather blocks updates — bot looks “dead”. */
@@ -73,6 +81,7 @@ export async function startApp(): Promise<void> {
 
   const shutdown = async () => {
     clearInterval(paymentTimer);
+    clearInterval(hotPaymentTimer);
     clearInterval(expiryTimer);
     await mainBot.stop();
     if (reportBot) await reportBot.stop();

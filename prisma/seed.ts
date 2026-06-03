@@ -49,7 +49,7 @@ async function main() {
     await prisma.feeSetting.create({
       data: {
         percentage: 0.01,
-        minimumUsd: 1,
+        minimumUsd: 0,
         maximumUsd: null,
         fixedUsd: 0,
         defaultFeePayer: "split",
