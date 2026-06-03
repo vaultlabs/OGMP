@@ -16,7 +16,9 @@ import {
 import { assertFileAllowed } from "../../utils/file-safety.js";
 import { replyTextForCaughtError } from "../../utils/user-facing-errors.js";
 import {
+  buyerDoesNotUploadDeliveryHint,
   notifyBuyerPaymentRequired,
+  sellerDeliveryNeedsFileHint,
   sellerFileSecuredKeyboard,
   sellerFileSecuredText,
 } from "../../services/delivery.service.js";
@@ -50,7 +52,7 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
     }
     await setActiveDealRoom(BigInt(ctx.from.id), dealId);
     await ctx.answerCallbackQuery({ text: "Deal room active" });
-    const banner = await formatDealRoomEntryPlain(dealId);
+    const banner = await formatDealRoomEntryPlain(dealId, u.id);
     await ctx.reply(banner);
   });
 
@@ -77,6 +79,8 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
     if (!dealId) return next();
     const u = await findUserByTelegramId(BigInt(ctx.from.id));
     if (!u) return;
+    const deal = await prisma.deal.findUnique({ where: { id: dealId } });
+    if (!deal) return;
     try {
       await saveDealRoomMessage({
         dealId,
@@ -84,8 +88,15 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
         messageType: "text",
         text: ctx.message.text,
       });
+      const extra =
+        deal.sellerId === u.id &&
+        (deal.status === "waiting_payment" || deal.status === "payment_detected")
+          ? ["", sellerDeliveryNeedsFileHint()].join("\n")
+          : "";
       await ctx.reply(
-        ["Message saved to this deal's Delivery log (Deal room).", "", formatDealRoomTextSavedPlain()].join("\n"),
+        ["Message saved to this deal's Delivery log (Deal room).", "", formatDealRoomTextSavedPlain(), extra]
+          .filter(Boolean)
+          .join("\n"),
       );
     } catch (e) {
       await ctx.reply(replyTextForCaughtError(e));
@@ -111,10 +122,14 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
     const deal = await prisma.deal.findUnique({ where: { id: dealId } });
     if (!deal) return;
     const hasFile = !!fileId;
+    const awaitingPay =
+      deal.status === "waiting_payment" || deal.status === "payment_detected";
+    if (deal.buyerId === u.id && hasFile && awaitingPay) {
+      await ctx.reply(buyerDoesNotUploadDeliveryHint());
+      return;
+    }
     const sellerLocked =
-      deal.sellerId === u.id &&
-      hasFile &&
-      (deal.status === "waiting_payment" || deal.status === "payment_detected");
+      deal.sellerId === u.id && hasFile && awaitingPay;
     try {
       await saveDealRoomMessage({
         dealId,
@@ -136,15 +151,32 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
         await ctx.reply(sellerFileSecuredText(deal.dealCode, fn), {
           reply_markup: sellerFileSecuredKeyboard(deal.dealCode),
         });
-        await notifyBuyerPaymentRequired(dealId);
+        const notified = await notifyBuyerPaymentRequired(dealId);
+        if (!notified) {
+          await ctx.reply(
+            [
+              "Vault locked.",
+              "",
+              "The buyer will get Payment Required as soon as escrow setup is ready.",
+              "If you have not set your payout wallet yet, do that on the deal card first.",
+            ].join("\n"),
+          );
+        }
         return;
       }
+      const sellerNote =
+        deal.sellerId === u.id && awaitingPay
+          ? "\n\n" + sellerDeliveryNeedsFileHint()
+          : "";
       await ctx.reply(
         [
           "File saved.",
           "",
           formatUploadContinuationPlain("send another file or type /done_room when you are finished"),
-        ].join("\n"),
+          sellerNote,
+        ]
+          .filter(Boolean)
+          .join("\n"),
       );
     } catch (e) {
       await ctx.reply(replyTextForCaughtError(e));

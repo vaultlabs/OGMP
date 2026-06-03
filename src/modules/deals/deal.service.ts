@@ -289,7 +289,7 @@ async function notifySellerPayoutWalletRequired(dealId: string): Promise<void> {
       "",
       "What: add the wallet where you want crypto when the buyer releases.",
       "Safe: buyer cannot pay until your wallet is confirmed.",
-      "Next: open the deal → Set payout wallet.",
+      "Next: Set payout wallet → Deal room → upload product files (photo/doc/zip) → Submit Delivery.",
     ].join("\n"),
     buttons: [
       [
@@ -383,6 +383,14 @@ export async function ensurePaymentInstruction(dealId: string): Promise<Deal> {
       logger.warn("payment_immediate_sync_after_address", { dealId, err: String(e) }),
     ),
   );
+  const { countLockedDeliveryMessages } = await import("../dealMessages/dealMessage.service.js");
+  const locked = await countLockedDeliveryMessages(dealId);
+  if (locked > 0) {
+    const { notifyBuyerPaymentRequired } = await import("../../services/delivery.service.js");
+    void notifyBuyerPaymentRequired(dealId).catch((e) =>
+      logger.warn("notify_buyer_payment_after_address", { dealId, err: String(e) }),
+    );
+  }
   return prisma.deal.findUniqueOrThrow({ where: { id: dealId } });
 }
 

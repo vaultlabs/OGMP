@@ -83,19 +83,46 @@ export async function adminForceRelease(dealId: string, adminTelegramId: bigint)
   });
 }
 
-export async function adminRetryPayout(dealCode: string, adminTelegramId: bigint): Promise<void> {
+export async function adminRetryPayout(dealCode: string, adminTelegramId: bigint): Promise<string> {
   assertAdmin(adminTelegramId);
-  const deal = await prisma.deal.findUnique({ where: { dealCode } });
-  if (!deal) throw new NotFoundError("Deal not found");
+  const normalized = dealCode.trim().toUpperCase();
+  const deal = await prisma.deal.findUnique({
+    where: { dealCode: normalized },
+    include: { payouts: { orderBy: { createdAt: "desc" } } },
+  });
+  if (!deal) throw new NotFoundError(`Deal not found: ${normalized}`);
   if (deal.status !== "released") {
-    throw new StateMachineError("Retry payout only applies to released deals");
+    throw new StateMachineError(`Retry payout only applies to released deals (this deal is: ${deal.status}).`);
   }
+  logger.warn("admin_retry_payout_start", { dealCode: normalized, dealId: deal.id, admin: adminTelegramId.toString() });
+
+  const stuckSubmitted = deal.payouts.find((p) => p.status === "processing" && p.providerRef);
+  if (stuckSubmitted) {
+    throw new StateMachineError(
+      `Payout already submitted to NOWPayments (id ${stuckSubmitted.providerRef}). ` +
+        "Check the NOWPayments dashboard — it may need 2FA verify or custody balance. " +
+        "Creating a duplicate payout is blocked.",
+    );
+  }
+
+  await prisma.payout.updateMany({
+    where: { dealId: deal.id, status: { in: ["pending", "processing", "failed"] } },
+    data: { status: "failed", adminNote: "reset by admin_retry_payout" },
+  });
+
   await logAdminAction({
     adminTelegramId,
     action: "retry_payout",
     dealId: deal.id,
   });
-  await executeDealPayoutAfterRelease(deal.id);
+  const result = await executeDealPayoutAfterRelease(deal.id);
+  if (!result.ok) {
+    throw new StateMachineError(result.error);
+  }
+  if (result.skipped) {
+    return result.message;
+  }
+  return `Payout submitted for ${normalized}. Check terminal logs and seller DM.`;
 }
 
 export async function adminMarkPayoutCompleted(params: {

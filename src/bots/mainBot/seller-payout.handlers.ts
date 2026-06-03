@@ -80,7 +80,19 @@ export function registerSellerPayoutHandlers(bot: Bot<Context>): void {
       if (updated.status === "waiting_payment" && !updated.paymentAddress) {
         try {
           const withPay = await ensurePaymentInstruction(updated.id);
-          if (withPay.paymentAddress) await notifyBothAfterPaymentLive(withPay.id);
+          if (withPay.paymentAddress) {
+            const locked = withPay.sellerId
+              ? await prisma.dealMessage.count({
+                  where: { dealId: withPay.id, lockedForBuyer: true, senderId: withPay.sellerId },
+                })
+              : 0;
+            if (locked > 0) {
+              const { notifyBuyerPaymentRequired } = await import("../../services/delivery.service.js");
+              await notifyBuyerPaymentRequired(withPay.id);
+            } else {
+              await notifyBothAfterPaymentLive(withPay.id);
+            }
+          }
         } catch {
           /* payment setup errors handled elsewhere */
         }

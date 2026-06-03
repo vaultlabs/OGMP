@@ -8,8 +8,46 @@ function lineUser(u: { username: string | null; firstName: string | null; telegr
   return `${u.firstName ?? "User"} (${un})`;
 }
 
+function roleNextStep(
+  deal: {
+    status: string;
+    buyerId: string | null;
+    sellerId: string | null;
+  },
+  actorUserId: string | undefined,
+  sellerLockedCount: number,
+): string {
+  if (!actorUserId) {
+    return "Next: use deal card buttons, or upload here as seller — /done_room when finished.";
+  }
+  const isSeller = deal.sellerId === actorUserId;
+  const isBuyer = deal.buyerId === actorUserId;
+
+  if (isBuyer && (deal.status === "waiting_payment" || deal.status === "payment_detected")) {
+    if (sellerLockedCount > 0) {
+      return "Next: open Payment Required (DM) or View deal → pay escrow. You do not upload delivery — the seller already locked files.";
+    }
+    return "Next: wait for the seller to upload and lock product files. You will get Payment Required when the vault is ready — do not pay until then.";
+  }
+
+  if (isSeller && (deal.status === "waiting_payment" || deal.status === "payment_detected")) {
+    if (sellerLockedCount > 0) {
+      return "Next: add more files if needed, then Submit Delivery on the deal card so the buyer gets Payment Required.";
+    }
+    return "Next: send photo, video, or document (or .zip) here to lock the Delivery Vault. Text alone does not lock. Then Submit Delivery.";
+  }
+
+  if (isBuyer) {
+    return "Next: use deal card buttons (Download, Release, Open Case). Chat here if you need to message the seller.";
+  }
+  if (isSeller) {
+    return "Next: use deal card buttons, or upload/chat here — /done_room when finished.";
+  }
+  return "Next: use deal card buttons — /done_room when finished.";
+}
+
 /** Plain-text banner when entering the in-chat deal room (no HTML). */
-export async function formatDealRoomEntryPlain(dealId: string): Promise<string> {
+export async function formatDealRoomEntryPlain(dealId: string, actorUserId?: string): Promise<string> {
   const d = await prisma.deal.findUnique({
     where: { id: dealId },
     include: { buyer: true, seller: true, activeReport: true },
@@ -31,6 +69,12 @@ export async function formatDealRoomEntryPlain(dealId: string): Promise<string> 
     ? `${d.activeReport.reportCode} (${d.activeReport.status.replace(/_/g, " ")})`
     : "none open";
   const protection = d.frozen ? "paused — Case Review" : "on";
+  const roleLine =
+    actorUserId && d.buyerId === actorUserId
+      ? "Your role: Buyer (you pay escrow — you do not upload the product)."
+      : actorUserId && d.sellerId === actorUserId
+        ? "Your role: Seller (you upload and lock delivery files)."
+        : null;
   return [
     "━━━━━━━━━━━━━━━━━━",
     "OGMP MM — Deal Room",
@@ -38,6 +82,7 @@ export async function formatDealRoomEntryPlain(dealId: string): Promise<string> 
     "",
     `Deal ID: ${d.dealCode}`,
     `Status: ${displayStatus}`,
+    ...(roleLine ? [roleLine] : []),
     `Buyer: ${lineUser(d.buyer)}`,
     `Seller: ${lineUser(d.seller)}`,
     `Amount: ${d.amount.toString()} ${d.currency}`,
@@ -49,7 +94,7 @@ export async function formatDealRoomEntryPlain(dealId: string): Promise<string> 
     "",
     "What: chat + uploads for this deal.",
     "Safe: keep payment and files inside OGMP MM only.",
-    "Next: use deal card buttons, or upload here as seller — /done_room when finished.",
+    roleNextStep(d, actorUserId, sellerLockedCount),
     "",
     COMMUNITY_TRUST_LINE,
     "",

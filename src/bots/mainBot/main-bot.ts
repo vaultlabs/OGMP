@@ -639,11 +639,11 @@ export function createMainBot(): Bot<Context> {
     } else if (deal.status === "waiting_payment" || deal.status === "payment_detected") {
       if (deal.buyerId === u.id) {
         hint = lockedPre
-          ? "\n\nWhat: Deal Protection — vault locked.\nSafe: escrow address is valid only from this bot.\nNext: pay exact amount → I Have Paid / Check Payment."
-          : "\n\nWhat: waiting on Delivery Vault.\nSafe: you are not asked to pay yet.\nNext: wait for Payment Required DM.";
+          ? "\n\nWhat: seller locked delivery — your turn to pay escrow.\nSafe: pay only via this bot’s address.\nNext: Payment Required DM or buttons below → exact amount → I Have Paid / Check Payment."
+          : "\n\nWhat: waiting on the seller to upload and lock delivery.\nSafe: you do not upload the product.\nNext: wait for Payment Required DM — do not pay until then.";
       } else if (deal.sellerId === u.id) {
         hint =
-          "\n\nWhat: your turn to fill the Delivery Vault.\nSafe: files stay locked until buyer pays.\nNext: Deal room → upload → Submit Delivery.";
+          "\n\nWhat: you upload the product — buyer pays after the vault locks.\nSafe: files stay locked until buyer pays.\nNext: Deal room → photo/doc/zip → Submit Delivery.";
       } else {
         hint = "\n\nWhat: deal is starting.\nSafe: follow in-bot steps only.\nNext: wait for participants.";
       }
@@ -696,7 +696,13 @@ export function createMainBot(): Bot<Context> {
     if (deal.status === "pending_acceptance" || deal.status === "waiting_payment") {
       kb.text("Request cancel", `d:cx:${deal.dealCode}`).row();
     }
-    kb.row().text("Upload / Deal room", `dr:enter:${deal.dealCode}`).row();
+    if (deal.sellerId === u.id) {
+      kb.row().text("Upload delivery / Deal room", `dr:enter:${deal.dealCode}`).row();
+    } else if (deal.buyerId === u.id) {
+      kb.row().text("Deal room (chat)", `dr:enter:${deal.dealCode}`).row();
+    } else {
+      kb.row().text("Deal room", `dr:enter:${deal.dealCode}`).row();
+    }
     kb.text("Timeline", `d:tl:${deal.dealCode}`).text("Delivery log", `d:pr:${deal.dealCode}`).row();
     kb.text("Open Case", `d:rp:${deal.dealCode}`);
     await ctx.reply(text + hint, { parse_mode: "HTML", reply_markup: kb });
@@ -819,10 +825,24 @@ export function createMainBot(): Bot<Context> {
       await ctx.answerCallbackQuery({ text: "Seller only", show_alert: true });
       return;
     }
-    await ctx.answerCallbackQuery({ text: "Buyer notified" });
     const { resubmitSellerDeliveryNotify } = await import("../../services/delivery.service.js");
-    await resubmitSellerDeliveryNotify(deal.id);
-    await ctx.reply("The buyer was reminded to complete payment.");
+    const locked = await prisma.dealMessage.count({
+      where: { dealId: deal.id, lockedForBuyer: true, senderId: deal.sellerId },
+    });
+    if (locked === 0) {
+      await ctx.answerCallbackQuery({
+        text: "Upload at least one file in Deal room first (photo/doc/zip). Text alone does not lock the vault.",
+        show_alert: true,
+      });
+      return;
+    }
+    const notified = await resubmitSellerDeliveryNotify(deal.id);
+    await ctx.answerCallbackQuery({ text: notified ? "Buyer notified" : "Buyer ping queued" });
+    await ctx.reply(
+      notified
+        ? "The buyer was sent Payment Required — they can pay escrow now."
+        : "Delivery is locked but Payment Required is not ready yet (payout wallet or payment setup). The buyer was told to wait; finish Set payout wallet if needed.",
+    );
   });
 
   bot.callbackQuery(/^bx:(?:pay|cp):(.+)$/, async (ctx) => {
@@ -1843,16 +1863,27 @@ export function createMainBot(): Bot<Context> {
   });
 
   bot.command("admin_retry_payout", async (ctx) => {
-    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) return;
+    if (!ctx.from) return;
+    const tid = BigInt(ctx.from.id);
+    if (!isAdminTelegramId(tid)) {
+      await ctx.reply(
+        "This command is admin-only. Set your Telegram numeric id in ADMIN_IDS in .env, restart the bot, and use the main escrow bot (not the report bot).",
+      );
+      return;
+    }
     const code = ctx.message?.text?.split(/\s+/)[1];
     if (!code) {
       await ctx.reply("Usage: `/admin_retry_payout DEALCODE`", { parse_mode: "Markdown" });
       return;
     }
     try {
-      await adminRetryPayout(code, BigInt(ctx.from.id));
-      await ctx.reply(`✅ Payout retry queued for ${code}.`);
+      const { logger } = await import("../../utils/logger.js");
+      logger.warn("admin_retry_payout_command", { dealCode: code, adminId: tid.toString() });
+      const msg = await adminRetryPayout(code, tid);
+      await ctx.reply(`✅ ${msg}`);
     } catch (e) {
+      const { logger } = await import("../../utils/logger.js");
+      logger.warn("admin_retry_payout_command_failed", { dealCode: code, err: String(e) });
       await ctx.reply(replyTextForCaughtError(e));
     }
   });

@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resetConfigCacheForTests } from "../config/index.js";
-import { normalizeTotpSecret, resolvePayoutVerificationCode } from "./nowpayments-payout-verify.js";
+import {
+  assertTotpSecretValid,
+  normalizeTotpSecret,
+  resolvePayoutVerificationCode,
+} from "./nowpayments-payout-verify.js";
 
 describe("nowpayments-payout-verify", () => {
   beforeEach(() => {
@@ -30,5 +34,25 @@ describe("nowpayments-payout-verify", () => {
   it("resolvePayoutVerificationCode uses manual when no secret", async () => {
     process.env.NOWPAYMENTS_PAYOUT_VERIFY_CODE = "123456";
     expect(await resolvePayoutVerificationCode()).toBe("123456");
+  });
+
+  it("assertTotpSecretValid accepts 15-character NOWPayments-style keys", () => {
+    expect(assertTotpSecretValid("JBSWY3DPEHPK3PXP")).toBe("JBSWY3DPEHPK3PXP");
+  });
+
+  it("assertTotpSecretValid rejects truncated secrets", () => {
+    expect(() => assertTotpSecretValid("JBSWY3DPEHPK3")).toThrow(/too short/i);
+  });
+
+  it("resolvePayoutVerificationCode generates TOTP for 15-char secret", async () => {
+    process.env.NOWPAYMENTS_2FA_SECRET = "JBSWY3DPEHPK3PXP";
+    const code = await resolvePayoutVerificationCode();
+    expect(code).toMatch(/^\d{6}$/);
+  });
+
+  it("resolvePayoutVerificationCode falls back to manual when secret is too short", async () => {
+    process.env.NOWPAYMENTS_2FA_SECRET = "JBSWY3DPEHPK3";
+    process.env.NOWPAYMENTS_PAYOUT_VERIFY_CODE = "654321";
+    expect(await resolvePayoutVerificationCode()).toBe("654321");
   });
 });

@@ -257,6 +257,53 @@ For extra safety: **github.com** → your profile **Settings** → **Codespaces*
 | `PUBLIC_BASE_URL=http://localhost:8080` | **https** `*.github.dev` from PORTS tab |
 | Google password in `NOWPAYMENTS_PASSWORD` | Password from **Reset password** on NOWPayments |
 | Paste token in GitHub Issue | Only in **`.env`** in Codespaces |
+| Payout log: `Invalid IP - x.x.x.x` | Whitelist that IP in NOWPayments (see below) |
+
+---
+
+## Payout error: `403 Access denied | Invalid IP`
+
+Pay-in (buyer invoices) can work while **seller payouts** fail with:
+
+`NOWPayments create payout failed (403): Access denied | Invalid IP - 4.240.39.202`
+
+That is **not** a missing API key or wrong email/password. NOWPayments requires **IP whitelisting** for mass payouts / custody.
+
+### Fix (5 minutes)
+
+1. Log in to **https://account.nowpayments.io**
+2. **Settings** → **Whitelist** → **Whitelist IPs**
+3. Click **Add an IP address** and paste the IP from the error (e.g. `4.240.39.202`) — add **IPv4 and IPv6** if both are shown in their FAQ checker
+4. In the same **Whitelist** area, open **Whitelist addresses** and add each **seller payout wallet** you use in deals (TRC20 etc.)
+5. Wait a few minutes, then retry: `/admin_retry_payout YOURDEALCODE`
+
+### Find your Codespaces outbound IP anytime
+
+In the Codespaces terminal:
+
+```bash
+curl -s https://api.ipify.org && echo
+```
+
+Whitelist whatever that prints. **Codespaces IPs can change** when you stop/start the codespace or rebuild — if payouts break again, run the command again and update the whitelist (or run the bot on a VPS with a **static** IP).
+
+To add more IPs later, NOWPayments may require emailing **partners@nowpayments.io** from your account email (see their Custody docs).
+
+---
+
+## Payout error: `400 Insufficient balance`
+
+Your **total** NOWPayments balance can look fine while the payout API still fails. Payouts use **Custody** in the **exact coin** of the deal (e.g. USDT TRC20 → `usdttrc20`), not “all coins combined.”
+
+| Check | Action |
+|-------|--------|
+| Custody vs Payments | Open **Custody** — buyer invoice funds may still be in Payments until moved or converted |
+| Same coin/network | Deal USDT TRC20 → need **USDT TRC20** custody, not only BTC or USDT ERC20 |
+| Pending | Wait until `pendingAmount` for that coin is 0 |
+| Network fee | **Settings → Payments → Payment Details → Withdrawal fee paid by → Receiver** |
+| Other coins | Use dashboard **Mass Payouts** to convert (the bot API cannot auto-convert) |
+
+`/admin_retry_payout DEALCODE` now replies with required amount vs available `usdttrc20` (etc.) when this happens.
 
 ---
 

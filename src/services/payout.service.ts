@@ -41,29 +41,51 @@ export function isPayoutVerifyAutomated(): boolean {
   return isPayoutVerifyConfigured();
 }
 
-export async function executeDealPayoutAfterRelease(dealId: string): Promise<void> {
+export type DealPayoutExecuteResult =
+  | { ok: true; skipped?: false }
+  | { ok: true; skipped: true; message: string }
+  | { ok: false; error: string };
+
+export async function executeDealPayoutAfterRelease(dealId: string): Promise<DealPayoutExecuteResult> {
   const lockKey = `lock:deal:${dealId}:payout`;
   const token = randomBytes(8).toString("hex");
   if (!(await acquireLock(lockKey, 120_000, token))) {
     logger.warn("payout_lock_busy", { dealId });
-    return;
+    return { ok: false, error: "Payout already running for this deal — wait a minute and retry." };
   }
   try {
     const deal = await prisma.deal.findUnique({
       where: { id: dealId },
       include: { seller: true, payouts: { orderBy: { createdAt: "desc" } } },
     });
-    if (!deal || deal.status !== "released") return;
+    if (!deal || deal.status !== "released") {
+      return { ok: false, error: "Deal is not in released status." };
+    }
     if (!deal.sellerPayoutAddress?.trim() || !deal.sellerPayoutConfirmedAt) {
       logger.warn("payout_skipped_no_seller_wallet", { dealId, dealCode: deal.dealCode });
-      return;
+      return { ok: false, error: "Seller payout wallet is not set on this deal." };
     }
 
     const amounts = resolveDealPaymentAmounts(deal);
     let payoutRow = deal.payouts.find((p) => p.status !== "failed") ?? null;
 
-    if (payoutRow?.status === "completed") return;
-    if (payoutRow?.status === "processing" && payoutRow.providerRef) return;
+    if (payoutRow?.status === "completed") {
+      logger.warn("payout_retry_skip_completed", { dealId, dealCode: deal.dealCode, payoutId: payoutRow.id });
+      return {
+        ok: true,
+        skipped: true,
+        message: `Payout already completed for ${deal.dealCode}. Seller was paid — check NOWPayments / wallet.`,
+      };
+    }
+    if (payoutRow?.status === "processing" && payoutRow.providerRef) {
+      logger.warn("payout_retry_skip_processing", { dealId, dealCode: deal.dealCode, payoutId: payoutRow.providerRef });
+      return {
+        ok: true,
+        skipped: true,
+        message:
+          `Payout already processing (${payoutRow.providerRef}). Check NOWPayments dashboard — verify 2FA / custody, do not retry.`,
+      };
+    }
 
     if (!payoutRow) {
       payoutRow = await prisma.payout.create({
@@ -84,10 +106,17 @@ export async function executeDealPayoutAfterRelease(dealId: string): Promise<voi
     if (provider.name === "nowpayments" && !isAutoPayoutConfigured()) {
       await notifySellerPayoutQueued(deal.dealCode, deal.sellerPayoutAddress, amounts.sellerReceives, deal.currency);
       await notifyAdminsPayoutSetupNeeded(deal.dealCode, "missing_nowpayments_email_password");
-      return;
+      return { ok: false, error: "NOWPayments payout auth not configured (email/password in .env)." };
     }
 
     try {
+      logger.warn("payout_create_start", {
+        dealId,
+        dealCode: deal.dealCode,
+        amount: formatCryptoAmount(amounts.sellerReceives),
+        currency: deal.currency,
+        network: deal.network,
+      });
       const result = await provider.createPayout(payoutRow, deal.sellerPayoutAddress.trim());
       if (provider.name === "nowpayments" && !isPayoutVerifyAutomated()) {
         await notifyAdminsPayoutEmailVerifyNeeded(deal.dealCode, result.payoutId);
@@ -118,12 +147,27 @@ export async function executeDealPayoutAfterRelease(dealId: string): Promise<voi
           result.status,
         );
       }
+      return { ok: true };
     } catch (e) {
       const err = String(e);
       logger.error("deal_payout_execute_failed", { dealId, err });
+      let adminDetail = err;
+      if (err.toLowerCase().includes("insufficient balance")) {
+        const { fetchNowpaymentsBalance, formatInsufficientBalanceHelp } = await import(
+          "../payments/nowpayments-balance.js"
+        );
+        const balance = await fetchNowpaymentsBalance();
+        adminDetail = formatInsufficientBalanceHelp({
+          dealCode: deal.dealCode,
+          currency: deal.currency,
+          network: deal.network,
+          payoutAmount: formatCryptoAmount(amounts.sellerReceives),
+          balance,
+        });
+      }
       await prisma.payout.update({
         where: { id: payoutRow.id },
-        data: { status: "failed", adminNote: err.slice(0, 500) },
+        data: { status: "failed", adminNote: adminDetail.slice(0, 500) },
       });
       if (deal.seller) {
         await enqueueDealParticipantNotify({
@@ -142,6 +186,7 @@ export async function executeDealPayoutAfterRelease(dealId: string): Promise<voi
           buttons: [[{ text: "View deal", cb: `d:v:${deal.dealCode}` }]],
         });
       }
+      return { ok: false, error: adminDetail };
     }
   } finally {
     await releaseLock(lockKey, token);

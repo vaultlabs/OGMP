@@ -162,6 +162,14 @@ NOWPayments still requires a **verify step** for each payout:
 ---
 
 ### `NOWPAYMENTS_2FA_SECRET` (recommended — fully automated payouts)
+
+**Must be the full base32 setup key from NOWPayments** — their keys are **exactly 15 characters** (e.g. `JBSWY3DPEHPK3PXP`). Copy all 15, no spaces.
+
+**Do not paste:**
+
+- The **6-digit** code from Google Authenticator (changes every 30s)
+- Only part of the key (14 characters or fewer will fail)
+- Your NOWPayments **password** or API key
 - **What:** Base32 secret from **Google Authenticator** when you enabled 2FA on NOWPayments.
 - **Leave empty** if you have not enabled 2FA yet (use email code flow above instead).
 - **How to get it:**
@@ -181,6 +189,8 @@ NOWPayments still requires a **verify step** for each payout:
 ### Enable on NOWPayments dashboard
 - **Custody** / balance for payouts
 - **Mass payouts** API enabled
+- **Whitelist IPs** — add the **server outbound IP** (the IP your bot uses to call the API). Payouts return `403 Invalid IP` until this is done. In Codespaces run `curl -s https://api.ipify.org` and whitelist that address in **Settings → Whitelist → Whitelist IPs**
+- **Whitelist addresses** — add seller payout wallet addresses you pay to
 - IPN callback URLs pointing to your `PUBLIC_BASE_URL` paths above
 
 ---

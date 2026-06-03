@@ -14,6 +14,7 @@ import {
 import { userFacingDealStatus } from "../modules/deals/user-facing-status.js";
 import { COMMUNITY_TRUST_LINE, DEAL_PROTECTION_BEFORE_PAY, TRUST_OPS_FOOTER } from "../bots/mainBot/trust-copy.js";
 import { formatCryptoAmount, resolveDealPaymentAmounts } from "./fee.service.js";
+import { sellerPayoutReady } from "../modules/deals/seller-payout.service.js";
 
 const DIV = "━━━━━━━━━━━━━━━━━━";
 
@@ -216,13 +217,62 @@ export function sellerFundsSecuredText(dealCode: string): string {
   ].join("\n");
 }
 
-export async function notifyBuyerPaymentRequired(dealId: string): Promise<void> {
-  const deal = await prisma.deal.findUnique({
+/** Plain hint when a seller text note does not lock the vault. */
+export function sellerDeliveryNeedsFileHint(): string {
+  return [
+    "Text saved, but it does not lock the Delivery Vault.",
+    "",
+    "What: buyers pay only after the seller locks real delivery files.",
+    "Next: send a photo, video, or document (or a .zip archive) in this Deal room.",
+    "Then tap Submit Delivery on the deal card if the buyer has not been pinged yet.",
+  ].join("\n");
+}
+
+/** Plain hint when the buyer tries to upload product files. */
+export function buyerDoesNotUploadDeliveryHint(): string {
+  return [
+    "Only the seller uploads the product for this deal.",
+    "",
+    "What: you are the buyer — wait for the seller to lock files in the Delivery Vault.",
+    "Safe: you are not asked to upload delivery.",
+    "Next: watch for the Payment Required DM, then pay using the in-bot escrow address only.",
+  ].join("\n");
+}
+
+export async function notifyBuyerPaymentRequired(dealId: string): Promise<boolean> {
+  let deal = await prisma.deal.findUnique({
     where: { id: dealId },
     include: { buyer: true, seller: true },
   });
+  if (!deal?.buyer || !deal.sellerId) return false;
+
+  const lockedCount = await prisma.dealMessage.count({
+    where: { dealId, lockedForBuyer: true, senderId: deal.sellerId },
+  });
+  if (lockedCount === 0) return false;
+
+  if (!deal.paymentAddress && sellerPayoutReady(deal)) {
+    try {
+      const { ensurePaymentInstruction } = await import("../modules/deals/deal.service.js");
+      await ensurePaymentInstruction(dealId);
+      deal = await prisma.deal.findUnique({
+        where: { id: dealId },
+        include: { buyer: true, seller: true },
+      });
+    } catch (e) {
+      logger.warn("notify_buyer_payment_ensure_instruction_failed", { dealId, err: String(e) });
+    }
+  }
+
+  if (!deal?.buyer || !deal.sellerId) return false;
+
+  if (!deal.paymentAddress) {
+    await notifyBuyerVaultLockedPaymentPending(dealId);
+    return false;
+  }
+
   const pay = await prisma.payment.findFirst({ where: { dealId }, orderBy: { createdAt: "desc" } });
-  if (!deal?.buyer || !deal.paymentAddress || !pay || !deal.sellerId) return;
+  if (!pay) return false;
   const amounts = resolveDealPaymentAmounts(deal);
   const locked = await prisma.dealMessage.findMany({
     where: { dealId, lockedForBuyer: true, senderId: deal.sellerId },
@@ -249,6 +299,58 @@ export async function notifyBuyerPaymentRequired(dealId: string): Promise<void> 
     text,
     buttons: buyerPaymentRequiredButtons(deal.dealCode),
   });
+  return true;
+}
+
+/** Buyer nudge when vault is locked but escrow pay address is not ready yet. */
+export async function notifyBuyerVaultLockedPaymentPending(dealId: string): Promise<void> {
+  const deal = await prisma.deal.findUnique({
+    where: { id: dealId },
+    include: { buyer: true, seller: true },
+  });
+  if (!deal?.buyer) return;
+  const needsWallet = deal.seller && !sellerPayoutReady(deal);
+  const text = [
+    DIV,
+    "OGMP MM — Delivery Vault locked",
+    DIV,
+    "",
+    `Deal: ${deal.dealCode}`,
+    "",
+    "What: the seller locked delivery in the vault.",
+    "Safe: you do not upload files — only the seller delivers the product.",
+    needsWallet
+      ? "Next: waiting for the seller to finish payout wallet setup — then you will get Payment Required with the escrow address."
+      : "Next: escrow address is being prepared — you will get Payment Required shortly. Do not pay outside OGMP MM until that DM arrives.",
+    "",
+    TRUST_OPS_FOOTER,
+  ].join("\n");
+  await notifyDmWithButtonsCritical({
+    chatId: deal.buyer.telegramId.toString(),
+    text,
+    buttons: [[{ text: "View deal", cb: `d:v:${deal.dealCode}` }]],
+  });
+  if (needsWallet && deal.seller) {
+    await notifyDmWithButtonsCritical({
+      chatId: deal.seller.telegramId.toString(),
+      text: [
+        DIV,
+        "OGMP MM — Buyer waiting on you",
+        DIV,
+        "",
+        `Deal: ${deal.dealCode}`,
+        "",
+        "What: delivery is locked but the buyer cannot pay yet.",
+        "Next: Set payout wallet on the deal card — then they receive Payment Required automatically.",
+      ].join("\n"),
+      buttons: [
+        [
+          { text: "Set payout wallet", cb: `spw:start:${deal.dealCode}` },
+          { text: "View deal", cb: `d:v:${deal.dealCode}` },
+        ],
+      ],
+    });
+  }
 }
 
 export async function onPaymentConfirmedDeliveryFlow(dealId: string): Promise<void> {
@@ -328,13 +430,14 @@ export async function onPaymentConfirmedDeliveryFlow(dealId: string): Promise<vo
   });
 }
 
-export async function resubmitSellerDeliveryNotify(dealId: string): Promise<void> {
-  await notifyBuyerPaymentRequired(dealId);
+export async function resubmitSellerDeliveryNotify(dealId: string): Promise<boolean> {
+  const ok = await notifyBuyerPaymentRequired(dealId);
   await appendDealTimelineEvent({
     dealId,
     eventType: "seller_submitted_delivery",
-    metadata: {},
+    metadata: { buyerNotified: ok },
   });
+  return ok;
 }
 
 export function paymentNotDetectedBuyerText(details?: {

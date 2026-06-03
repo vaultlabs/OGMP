@@ -431,7 +431,7 @@ export class NowPaymentsProvider implements PaymentProvider {
           totpAuto: Boolean(cfg.NOWPAYMENTS_2FA_SECRET?.trim()),
         });
         const hint = cfg.NOWPAYMENTS_2FA_SECRET?.trim()
-          ? "Check NOWPAYMENTS_2FA_SECRET matches NOWPayments Authenticator."
+          ? "Check NOWPAYMENTS_2FA_SECRET is the full 15-character 2FA Key from NOWPayments, not the 6-digit code. Or set NOWPAYMENTS_PAYOUT_VERIFY_CODE from email and /admin_retry_payout."
           : "If 2FA is off, use the code from your NOWPayments email in NOWPAYMENTS_PAYOUT_VERIFY_CODE, then /admin_retry_payout.";
         throw new Error(`NOWPayments payout verify failed (${vRes.status}). ${hint}`);
       }
