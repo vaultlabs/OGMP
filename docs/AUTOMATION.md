@@ -60,10 +60,12 @@ AUTO_RELEASE_ENABLED=true
 ### Automated seller payouts (no manual 2FA typing)
 
 ```env
-NOWPAYMENTS_EMAIL=
-NOWPAYMENTS_PASSWORD=
-NOWPAYMENTS_2FA_SECRET=     # Base32 secret from NOWPayments Google Authenticator setup
+NOWPAYMENTS_EMAIL=you@gmail.com
+NOWPAYMENTS_PASSWORD=        # API password from Reset password — NOT Google sign-in
+NOWPAYMENTS_2FA_SECRET=      # Authenticator secret from NOWPayments 2FA setup
 ```
+
+**Google login on the website?** That’s fine. Use **Reset password** on the NOWPayments login page to set an API password for the same email. See [ENV_SETUP.md](./ENV_SETUP.md#nowpayments_email--nowpayments_password).
 
 The bot **generates** the 6-digit verify code on every payout using `NOWPAYMENTS_2FA_SECRET`.  
 Do **not** use `NOWPAYMENTS_PAYOUT_VERIFY_CODE` unless you refuse to set up 2FA secret.

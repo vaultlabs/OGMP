@@ -17,8 +17,8 @@ Copy `.env.example` to `.env` in the project root. **Never commit `.env`** (it h
 | `PAYMENT_PROVIDER` | `nowpayments` |
 | `NOWPAYMENTS_API_KEY` | API key from NOWPayments dashboard → API |
 | `NOWPAYMENTS_IPN_SECRET` | IPN secret from NOWPayments → IPN settings |
-| `NOWPAYMENTS_EMAIL` | Same email you use to log in to NOWPayments |
-| `NOWPAYMENTS_PASSWORD` | That account password |
+| `NOWPAYMENTS_EMAIL` | Your NOWPayments account email (Gmail is fine) |
+| `NOWPAYMENTS_PASSWORD` | API password from **Reset password** — not your Google password |
 | `NOWPAYMENTS_2FA_SECRET` | Base32 secret from Google Authenticator setup (see below) |
 
 Leave `NOWPAYMENTS_PAYOUT_VERIFY_CODE` **empty** if you use `NOWPAYMENTS_2FA_SECRET` (recommended).
@@ -118,9 +118,33 @@ Leave `NOWPAYMENTS_PAYOUT_VERIFY_CODE` **empty** if you use `NOWPAYMENTS_2FA_SEC
 - **How:** Leave **empty** (uses `https://api.nowpayments.io`).
 
 ### `NOWPAYMENTS_EMAIL` + `NOWPAYMENTS_PASSWORD`
-- **What:** Dashboard login used for **mass payout** API (`POST /v1/auth`).
-- **How:** Same email/password you use at [account.nowpayments.io](https://account.nowpayments.io).
-- **Required** for automatic seller payouts.
+- **What:** Credentials for **mass payout** API only (`POST /v1/auth`). This is **not** “Sign in with Google” on the website.
+- **Required** for automatic seller payouts (unless you use a short-lived `NOWPAYMENTS_BEARER_TOKEN` manually).
+
+#### If you log in with Google (most common)
+Google OAuth is only for the **website**. The API still needs **email + password**:
+
+1. Use the **same email** as your NOWPayments account (the one tied to Google).
+2. Create an **API password** (separate from Google):
+   - Go to [account.nowpayments.io](https://account.nowpayments.io) → **Log out** if needed.
+   - On the login page click **Reset password** (not “Continue with Google”).
+   - Enter your account **email** → open the link in email → set a **new password**.
+   - Or: log in with Google → **Account settings** → **Change password** (if available).
+3. In `.env`:
+   ```env
+   NOWPAYMENTS_EMAIL=you@gmail.com
+   NOWPAYMENTS_PASSWORD=the_password_you_just_set
+   ```
+4. Keep using **Google** to open the dashboard in the browser — the `.env` password is **only for the bot API**.
+
+You do **not** put your Google password in `.env`.
+
+#### If you log in with email + password normally
+Use that same email and password in `.env`.
+
+### `NOWPAYMENTS_BEARER_TOKEN` (optional, not recommended)
+- **What:** A JWT from `POST /v1/auth`, valid ~5 minutes.
+- **How:** Only for debugging; expires too fast for production automation. Prefer email + password above.
 
 ### `NOWPAYMENTS_2FA_SECRET` (recommended — fully automated payouts)
 - **What:** Base32 secret from **Google Authenticator** when you enabled 2FA on NOWPayments.

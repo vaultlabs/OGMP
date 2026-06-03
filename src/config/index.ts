@@ -38,8 +38,12 @@ const envSchema = z
     NOWPAYMENTS_API_BASE: z.preprocess(emptyToUndefinedUrl, z.string().url().optional()),
     PUBLIC_BASE_URL: z.preprocess(emptyToUndefinedUrl, z.string().url().optional()),
     AUTO_RELEASE_ENABLED: z.coerce.boolean().default(true),
+    /** Account email (same as Google sign-up email). Used for POST /v1/auth — not Google OAuth. */
     NOWPAYMENTS_EMAIL: z.string().optional(),
+    /** API password from dashboard / password reset — not your Google password. */
     NOWPAYMENTS_PASSWORD: z.string().optional(),
+    /** Optional: pre-issued JWT (expires ~5 min). Prefer email+password for automation. */
+    NOWPAYMENTS_BEARER_TOKEN: z.string().optional(),
     /** Google Authenticator base32 secret — bot auto-generates payout verify codes (recommended). */
     NOWPAYMENTS_2FA_SECRET: z.string().optional(),
     /** Manual fallback: one-time email code if 2FA is off on NOWPayments (expires ~1h). */

@@ -11,13 +11,24 @@ function apiBase(): string {
   return (cfg.NOWPAYMENTS_API_BASE ?? DEFAULT_API_BASE).replace(/\/$/, "");
 }
 
-/** JWT for mass payouts (POST /v1/payout). Cached ~4 minutes. */
+/**
+ * JWT for mass payouts (POST /v1/payout). Cached ~4 minutes.
+ * Dashboard "Sign in with Google" still uses an account email — set an API password via Reset password (see docs/ENV_SETUP.md).
+ */
 export async function getNowpaymentsBearerToken(): Promise<string> {
   const cfg = loadConfig();
+  const preset = cfg.NOWPAYMENTS_BEARER_TOKEN?.trim();
+  if (preset) {
+    return preset;
+  }
+
   const email = cfg.NOWPAYMENTS_EMAIL?.trim();
   const password = cfg.NOWPAYMENTS_PASSWORD?.trim();
   if (!email || !password) {
-    throw new Error("NOWPayments payouts require NOWPAYMENTS_EMAIL and NOWPAYMENTS_PASSWORD");
+    throw new Error(
+      "NOWPayments payouts need NOWPAYMENTS_EMAIL + NOWPAYMENTS_PASSWORD (API password, not your Google login). " +
+        "If you only use Google on the website: login page → Reset password → set a password for your account email, then put that email and password in .env. See docs/ENV_SETUP.md.",
+    );
   }
 
   const now = Date.now();
