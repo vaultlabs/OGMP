@@ -430,9 +430,10 @@ export class NowPaymentsProvider implements PaymentProvider {
           body: vText.slice(0, 300),
           totpAuto: Boolean(cfg.NOWPAYMENTS_2FA_SECRET?.trim()),
         });
-        throw new Error(
-          `NOWPayments payout verify failed (${vRes.status}). Check NOWPAYMENTS_2FA_SECRET matches your Authenticator.`,
-        );
+        const hint = cfg.NOWPAYMENTS_2FA_SECRET?.trim()
+          ? "Check NOWPAYMENTS_2FA_SECRET matches NOWPayments Authenticator."
+          : "If 2FA is off, use the code from your NOWPayments email in NOWPAYMENTS_PAYOUT_VERIFY_CODE, then /admin_retry_payout.";
+        throw new Error(`NOWPayments payout verify failed (${vRes.status}). ${hint}`);
       }
       logger.info("nowpayments_payout_verified", {
         withdrawalId,

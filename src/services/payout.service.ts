@@ -11,21 +11,34 @@ import { formatCryptoAmount, resolveDealPaymentAmounts } from "./fee.service.js"
 import { randomBytes } from "node:crypto";
 
 import { formatPayoutAmount } from "../payments/payout-amount.js";
-import { isPayoutVerifyConfigured } from "../payments/nowpayments-payout-verify.js";
+import {
+  isPayoutVerifyConfigured,
+} from "../payments/nowpayments-payout-verify.js";
+import { getAllAdminTelegramIds } from "../modules/admin/admin-ids.service.js";
 
 const DIV = "━━━━━━━━━━━━━━━━━━";
 
 export { formatPayoutAmount };
 
+/** Email/password (or bearer) — enough to create payouts via API. */
+export function isNowpaymentsPayoutAuthConfigured(): boolean {
+  const cfg = loadConfig();
+  return Boolean(
+    cfg.NOWPAYMENTS_BEARER_TOKEN?.trim() ||
+      (cfg.NOWPAYMENTS_EMAIL?.trim() && cfg.NOWPAYMENTS_PASSWORD?.trim()),
+  );
+}
+
 export function isAutoPayoutConfigured(): boolean {
   const cfg = loadConfig();
   if (cfg.PAYMENT_PROVIDER === "mock") return true;
   if (cfg.PAYMENT_PROVIDER !== "nowpayments") return false;
-  return Boolean(
-    cfg.NOWPAYMENTS_EMAIL?.trim() &&
-      cfg.NOWPAYMENTS_PASSWORD?.trim() &&
-      isPayoutVerifyConfigured(),
-  );
+  return isNowpaymentsPayoutAuthConfigured();
+}
+
+/** True when bot can auto-submit payout verify (2FA secret or manual code in env). */
+export function isPayoutVerifyAutomated(): boolean {
+  return isPayoutVerifyConfigured();
 }
 
 export async function executeDealPayoutAfterRelease(dealId: string): Promise<void> {
@@ -70,11 +83,15 @@ export async function executeDealPayoutAfterRelease(dealId: string): Promise<voi
     const provider = getPaymentProvider();
     if (provider.name === "nowpayments" && !isAutoPayoutConfigured()) {
       await notifySellerPayoutQueued(deal.dealCode, deal.sellerPayoutAddress, amounts.sellerReceives, deal.currency);
+      await notifyAdminsPayoutSetupNeeded(deal.dealCode, "missing_nowpayments_email_password");
       return;
     }
 
     try {
       const result = await provider.createPayout(payoutRow, deal.sellerPayoutAddress.trim());
+      if (provider.name === "nowpayments" && !isPayoutVerifyAutomated()) {
+        await notifyAdminsPayoutEmailVerifyNeeded(deal.dealCode, result.payoutId);
+      }
       const nextStatus = result.status === "completed" ? "completed" : "processing";
       await prisma.payout.update({
         where: { id: payoutRow.id },
@@ -128,6 +145,66 @@ export async function executeDealPayoutAfterRelease(dealId: string): Promise<voi
     }
   } finally {
     await releaseLock(lockKey, token);
+  }
+}
+
+async function notifyAdminsPayoutEmailVerifyNeeded(
+  dealCode: string,
+  withdrawalId: string,
+): Promise<void> {
+  const text = [
+    DIV,
+    "OGMP MM — Payout verify (admin)",
+    DIV,
+    "",
+    `Deal: ${dealCode}`,
+    `NOWPayments payout id: ${withdrawalId}`,
+    "",
+    "Your account has 2FA OFF — NOWPayments emailed a 6-digit code to your registration email (valid ~1 hour).",
+    "",
+    "Quick fix:",
+    "1. Copy the code from that email",
+    "2. In .env set: NOWPAYMENTS_PAYOUT_VERIFY_CODE=123456",
+    "3. Restart the bot",
+    `4. Run: /admin_retry_payout ${dealCode}`,
+    "",
+    "Full automation (recommended): NOWPayments → Account → enable 2FA (Google Authenticator) → copy secret into NOWPAYMENTS_2FA_SECRET in .env (leave PAYOUT_VERIFY_CODE empty).",
+  ].join("\n");
+  const buttons = [[{ text: "View deal", cb: `d:v:${dealCode}` }]];
+  for (const id of getAllAdminTelegramIds()) {
+    try {
+      await notifyDealParticipantCritical({
+        targetTelegramId: BigInt(id),
+        text,
+        buttons,
+      });
+    } catch (e) {
+      logger.warn("admin_payout_verify_notify_failed", { adminId: id, err: String(e) });
+    }
+  }
+}
+
+async function notifyAdminsPayoutSetupNeeded(dealCode: string, reason: string): Promise<void> {
+  const text = [
+    DIV,
+    "OGMP MM — Payout not configured",
+    DIV,
+    "",
+    `Deal: ${dealCode}`,
+    `Reason: ${reason}`,
+    "",
+    "Set NOWPAYMENTS_EMAIL + NOWPAYMENTS_PASSWORD in .env (API password — see docs/ENV_SETUP.md if you use Google login).",
+  ].join("\n");
+  for (const id of getAllAdminTelegramIds()) {
+    try {
+      await enqueueDealParticipantNotify({
+        targetTelegramId: BigInt(id),
+        text,
+        buttons: [[{ text: "View deal", cb: `d:v:${dealCode}` }]],
+      });
+    } catch {
+      /* ignore */
+    }
   }
 }
 

@@ -146,8 +146,24 @@ Use that same email and password in `.env`.
 - **What:** A JWT from `POST /v1/auth`, valid ~5 minutes.
 - **How:** Only for debugging; expires too fast for production automation. Prefer email + password above.
 
+### No 2FA on your NOWPayments account?
+
+NOWPayments still requires a **verify step** for each payout:
+
+| Your setup | What happens | Fully automatic? |
+|------------|----------------|------------------|
+| **2FA enabled** + `NOWPAYMENTS_2FA_SECRET` | Bot generates codes | Yes |
+| **2FA off** (your case) | Code emailed to registration email (~1h) | No — unless you enable 2FA |
+
+**Recommended (5 minutes):** NOWPayments dashboard → **Account settings** → enable **2FA** (Google Authenticator) → copy the **secret key** into `NOWPAYMENTS_2FA_SECRET`. You can keep logging in with Google on the website.
+
+**If you keep 2FA off:** When a buyer releases, check your NOWPayments email, put the 6-digit code in `.env` as `NOWPAYMENTS_PAYOUT_VERIFY_CODE=123456`, restart the bot, run `/admin_retry_payout DEALCODE`. Admins also get a Telegram reminder.
+
+---
+
 ### `NOWPAYMENTS_2FA_SECRET` (recommended — fully automated payouts)
 - **What:** Base32 secret from **Google Authenticator** when you enabled 2FA on NOWPayments.
+- **Leave empty** if you have not enabled 2FA yet (use email code flow above instead).
 - **How to get it:**
   1. NOWPayments → Account → enable **2FA** (Google Authenticator).
   2. When shown QR code, choose **“Can’t scan?” / manual entry** and copy the **secret key** (letters A–Z and digits, often 16+ chars).
@@ -156,10 +172,11 @@ Use that same email and password in `.env`.
   4. Keep the same secret in Google Authenticator on your phone (codes must match NOWPayments).
 - **Result:** Bot generates a fresh 6-digit code on **every** payout verify — **you never paste codes manually**.
 
-### `NOWPAYMENTS_PAYOUT_VERIFY_CODE` (fallback only)
-- **What:** Single 6-digit code from email (if 2FA is **off** on NOWPayments).
-- **How:** Only if you refuse to use `NOWPAYMENTS_2FA_SECRET`; code expires ~1 hour — **not** fully automated.
-- **Leave empty** when using `NOWPAYMENTS_2FA_SECRET`.
+### `NOWPAYMENTS_PAYOUT_VERIFY_CODE` (use when 2FA is **off**)
+- **What:** 6-digit code from your **registration email** after a payout is created.
+- **How:** After buyer release, open the NOWPayments email → paste code in `.env` → restart bot → `/admin_retry_payout DEALCODE`.
+- **Expires:** ~1 hour.
+- **Leave empty** when `NOWPAYMENTS_2FA_SECRET` is set (2FA on).
 
 ### Enable on NOWPayments dashboard
 - **Custody** / balance for payouts
