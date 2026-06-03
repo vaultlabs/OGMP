@@ -13,6 +13,12 @@
 - **Express** (health check + payment webhooks)
 - **Docker** / **docker-compose**
 
+## Full production setup (NOWPayments + automated payouts)
+
+**Baby-step A→Z guide:** [docs/SETUP_A_TO_Z.md](docs/SETUP_A_TO_Z.md) — what to fill in `.env`, where to click in BotFather / NOWPayments, and how to test a deal.
+
+Shorter reference: [docs/ENV_SETUP.md](docs/ENV_SETUP.md) · [docs/AUTOMATION.md](docs/AUTOMATION.md)
+
 ## Super simple start (read this first)
 
 You only type a few things in order. **Do them one at a time.**
