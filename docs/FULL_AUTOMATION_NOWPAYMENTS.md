@@ -112,11 +112,37 @@ LOG_LEVEL=info
 
 Restart bot after any `.env` change.
 
-### Step 3 — Custody + balance
+### Step 3 — Custody + balance (multi-coin)
+
+OGMP supports several coins (USDT TRC20/ERC20, BTC, ETH, LTC, etc.). **Each deal uses one coin for its whole life** — buyer pays in that coin, seller is paid out in **the same** coin.
+
+### Automatic Custody swap before payout (built in)
+
+When `NOWPAYMENTS_AUTO_CUSTODY_CONVERT=true` (default), on **buyer release** the bot:
+
+1. Checks Custody for the deal’s coin (e.g. `usdttrc20`).
+2. If balance is short, calls NOWPayments **POST /v1/conversion** to swap from your **other** Custody coins (largest balance first).
+3. Then creates the seller payout.
+
+So you can run **multi-coin deals** without manually converting in the dashboard for every payout. Buyer payments still land in the coin they paid; swaps only run when paying the seller.
+
+| Deal type | Payout coin (Custody) |
+|-----------|------------------------|
+| USDT TRC20 | `usdttrc20` |
+| USDT ERC20 | `usdterc20` |
+| BTC | `btc` |
+| ETH | `eth` |
+| LTC | `ltc` |
+
+**You still need** some total value in Custody across coins (or in the deal coin). Auto-convert cannot pay from an empty account. NOWPayments charges ~0.5% on internal conversions.
+
+**Disable auto-swap:** `NOWPAYMENTS_AUTO_CUSTODY_CONVERT=false` in `.env`.
+
+**Simplest ops:** Still fine to use only USDT TRC20 in your menu if you want one float only.
 
 - Enable **Custody** in dashboard.
 - **Withdrawal fee paid by → Receiver** (Settings → Payments → Payment Details).
-- Keep enough **Custody balance in the deal coin** (e.g. USDT TRC20), not only “total balance”.
+- “Total balance” across all coins is **not** enough — check the line for **that deal’s** coin before release.
 
 ### Step 4 — Production hosting (strongly recommended)
 

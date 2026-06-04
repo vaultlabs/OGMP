@@ -48,6 +48,8 @@ const envSchema = z
     NOWPAYMENTS_2FA_SECRET: z.string().optional(),
     /** Manual fallback: one-time email code if 2FA is off on NOWPayments (expires ~1h). */
     NOWPAYMENTS_PAYOUT_VERIFY_CODE: z.string().optional(),
+    /** When true (default), before payout the bot swaps Custody from other coins into the deal coin via NOWPayments API. */
+    NOWPAYMENTS_AUTO_CUSTODY_CONVERT: z.coerce.boolean().default(true),
     /** After escrow payment confirms, DM buyer each delivery file_id from the deal (if false, only a Download button). */
     AUTO_SEND_DELIVERY_AFTER_PAYMENT: z.coerce.boolean().default(true),
     MOCK_WEBHOOK_SECRET: z.string().optional(),

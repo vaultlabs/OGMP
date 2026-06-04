@@ -117,6 +117,17 @@ export async function executeDealPayoutAfterRelease(dealId: string): Promise<Dea
         currency: deal.currency,
         network: deal.network,
       });
+      if (provider.name === "nowpayments") {
+        const { ensureCustodyBalanceForPayout } = await import("../payments/nowpayments-custody-convert.js");
+        const prep = await ensureCustodyBalanceForPayout({
+          currency: deal.currency,
+          network: deal.network,
+          amountNeeded: formatPayoutAmount(amounts.sellerReceives),
+        });
+        if (!prep.ok) {
+          throw new Error(prep.detail ?? "NOWPayments Custody balance too low for payout (auto-convert failed).");
+        }
+      }
       const result = await provider.createPayout(payoutRow, deal.sellerPayoutAddress.trim());
       if (provider.name === "nowpayments" && !isPayoutVerifyAutomated()) {
         await notifyAdminsPayoutEmailVerifyNeeded(deal.dealCode, result.payoutId);

@@ -76,6 +76,8 @@ Do **not** use `NOWPAYMENTS_PAYOUT_VERIFY_CODE` unless you refuse to set up 2FA 
 
 Enable **Custody / Mass payouts** in the NOWPayments dashboard.
 
+**Multi-coin deals:** With `NOWPAYMENTS_AUTO_CUSTODY_CONVERT=true` (default), the bot swaps Custody into the deal’s coin before paying the seller — no manual convert per deal. See [FULL_AUTOMATION_NOWPAYMENTS.md](./FULL_AUTOMATION_NOWPAYMENTS.md).
+
 **Every env variable explained:** [ENV_SETUP.md](./ENV_SETUP.md)
 
 **Webhooks** (must be reachable on `PUBLIC_BASE_URL`):
