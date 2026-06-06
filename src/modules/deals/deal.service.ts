@@ -191,6 +191,9 @@ export async function acceptTerms(userId: string, dealId: string): Promise<Deal>
       where: { dealId_userId: { dealId, userId } },
     });
     if (!participant) throw new ForbiddenError();
+    if (participant.termsAcceptedAt) {
+      return prisma.deal.findUniqueOrThrow({ where: { id: dealId } });
+    }
     await prisma.dealParticipant.update({
       where: { dealId_userId: { dealId, userId } },
       data: { termsAcceptedAt: new Date() },

@@ -2,6 +2,7 @@ import { Bot, Context, InlineKeyboard, InputFile } from "grammy";
 import { loadConfig, isAdminTelegramId, getMainBotToken, getReportBotToken, getReportBotUsernameForDeepLinks } from "../../config/index.js";
 import { logger } from "../../utils/logger.js";
 import { replyTextForCaughtError } from "../../utils/user-facing-errors.js";
+import { replyOrEditCallbackMessage } from "../../utils/telegram-callback.js";
 import { redisIncrWithTtl } from "../../utils/redis.js";
 import { prisma } from "../../db/prisma.js";
 import type { ParticipantRole, User } from "@prisma/client";
@@ -121,7 +122,6 @@ import { escapeTelegramHtml } from "../../utils/telegram-html.js";
 import {
   createDealSuccessKeyboard,
   joinSuccessKeyboard,
-  nextStepAfterPaymentSetupFailed,
   nextStepForActorReply,
   notifyBothAfterPaymentLive,
   notifyCounterpartyAfterTermsAccept,
@@ -332,7 +332,18 @@ async function fmtDealCard(dealId: string, viewerUserId: string | null = null): 
 ${e(termsPreview)}`,
   ];
   if (lastEv) lines.push(`<b>Latest event</b>: ${e(lastEv.eventType)}`);
-  if (d.paymentAddress && d.status !== "pending_acceptance") {
+  if (
+    isBuyerView &&
+    sellerLockedCount > 0 &&
+    !d.paymentAddress &&
+    (d.status === "waiting_payment" || d.status === "payment_detected")
+  ) {
+    lines.push(
+      "",
+      `<b>Escrow pay</b>: ${e("Delivery locked — pay address not ready yet. Seller must set payout wallet; tap Show payment details on the deal card when available.")}`,
+      `<i>${e("Do not send crypto until the escrow address appears here.")}</i>`,
+    );
+  } else if (d.paymentAddress && d.status !== "pending_acceptance") {
     if (hideEscrowFromBuyer) {
       lines.push(
         "",
@@ -626,25 +637,29 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     await ctx.answerCallbackQuery();
+    const { countSellerLockedDelivery, isBuyerPaymentReady } = await import(
+      "../../services/delivery.service.js"
+    );
     const text = await fmtDealCard(deal.id, u.id);
-    const lockedPre = deal.sellerId
-      ? await prisma.dealMessage.count({
-          where: { dealId: deal.id, lockedForBuyer: true, senderId: deal.sellerId },
-        })
-      : 0;
+    const lockedPre = await countSellerLockedDelivery(deal.id, deal.sellerId);
+    const buyerCanPay = await isBuyerPaymentReady(deal.id);
     let hint = "";
     if (deal.status === "pending_acceptance") {
       hint =
         "\n\nWhat: terms step.\nSafe: no escrow pay until Delivery Vault locks.\nNext: both accept terms, then seller fills the vault.";
     } else if (deal.status === "waiting_payment" || deal.status === "payment_detected") {
       if (deal.buyerId === u.id) {
-        hint = lockedPre
-          ? "\n\nWhat: seller locked delivery — your turn to pay escrow.\nSafe: pay only via this bot’s address.\nNext: Payment Required DM or buttons below → exact amount → I Have Paid / Check Payment."
-          : "\n\nWhat: waiting on the seller to upload and lock delivery.\nSafe: you do not upload the product.\nNext: wait for Payment Required DM — do not pay until then.";
+        hint = buyerCanPay
+          ? "\n\nWhat: your turn to pay escrow.\nSafe: use the address above or tap Show payment details.\nNext: send exact amount, then I Have Paid / Check Payment."
+          : lockedPre
+            ? "\n\nWhat: delivery is locked — waiting on seller payout wallet or pay address.\nSafe: do not pay yet.\nNext: seller must Set payout wallet; you will get Payment Required when ready."
+            : "\n\nWhat: waiting on the seller to upload and lock delivery.\nSafe: you do not upload the product.\nNext: wait for Payment Required — do not pay until then.";
       } else if (deal.sellerId === u.id) {
-        hint =
-          "\n\nWhat: you upload the product — buyer pays after the vault locks.\nSafe: files stay locked until buyer pays.\nNext: Deal room → photo/doc/zip → Submit Delivery.";
-      } else {
+        hint = lockedPre
+          ? !sellerPayoutReady(deal)
+            ? "\n\nWhat: delivery locked — set payout wallet so buyer can pay.\nSafe: files stay locked until buyer pays.\nNext: Set payout wallet, then Submit Delivery."
+            : "\n\nWhat: delivery locked — buyer can pay now.\nSafe: files stay locked until buyer pays.\nNext: Submit Delivery if they did not get Payment Required."
+          : "\n\nWhat: you upload the product — buyer pays after the vault locks.\nSafe: files stay locked until buyer pays.\nNext: Deal room → photo/doc/zip → Submit Delivery."      } else {
         hint = "\n\nWhat: deal is starting.\nSafe: follow in-bot steps only.\nNext: wait for participants.";
       }
     } else if (deal.status === "funded") {
@@ -661,18 +676,26 @@ export function createMainBot(): Bot<Context> {
     }
     const kb = new InlineKeyboard();
     if (deal.status === "pending_acceptance") {
-      kb.text("Accept terms", `d:a:${deal.dealCode}`).row();
+      const part = await prisma.dealParticipant.findUnique({
+        where: { dealId_userId: { dealId: deal.id, userId: u.id } },
+      });
+      if (!part?.termsAcceptedAt) {
+        kb.text("Accept terms", `d:a:${deal.dealCode}`).row();
+      }
     }
     const spwBtn = sellerPayoutDealButton(deal, u.id);
     if (spwBtn && !sellerPayoutReady(deal) && deal.status !== "released" && deal.status !== "cancelled") {
       kb.text(spwBtn.text, spwBtn.cb).row();
     }
-    if (
-      deal.buyerId === u.id &&
-      lockedPre > 0 &&
-      (deal.status === "waiting_payment" || deal.status === "payment_detected")
-    ) {
+    if (deal.sellerId === u.id && lockedPre > 0 && (deal.status === "waiting_payment" || deal.status === "payment_detected")) {
+      kb.text("Submit Delivery", `dl:sub:${deal.dealCode}`).row();
+    }
+    if (deal.buyerId === u.id && buyerCanPay) {
+      kb.text("Show payment details", `bx:pd:${deal.dealCode}`).row();
       kb.text("I Have Paid", `bx:pay:${deal.dealCode}`).text("Check Payment", `bx:cp:${deal.dealCode}`).row();
+      if (deal.paymentAddress) {
+        kb.text("Copy address", `bx:addr:${deal.dealCode}`).row();
+      }
     }
     if (deal.buyerId === u.id && deal.status === "item_delivered") {
       kb.text("Download Files", `bx:dl:${deal.dealCode}`).row();
@@ -705,7 +728,7 @@ export function createMainBot(): Bot<Context> {
     }
     kb.text("Timeline", `d:tl:${deal.dealCode}`).text("Delivery log", `d:pr:${deal.dealCode}`).row();
     kb.text("Open Case", `d:rp:${deal.dealCode}`);
-    await ctx.reply(text + hint, { parse_mode: "HTML", reply_markup: kb });
+    await replyOrEditCallbackMessage(ctx, text + hint, { parse_mode: "HTML", reply_markup: kb });
   });
 
   bot.callbackQuery(/^d:tl:(.+)$/, async (ctx) => {
@@ -860,6 +883,34 @@ export function createMainBot(): Bot<Context> {
     await ctx.reply(msg);
   });
 
+  bot.callbackQuery(/^bx:pd:(.+)$/, async (ctx) => {
+    if (!ctx.from || !ctx.match) return;
+    const u = await requireUser(ctx);
+    if (!u) return;
+    const deal = await prisma.deal.findUnique({ where: { dealCode: ctx.match[1] } });
+    if (!deal || deal.buyerId !== u.id) {
+      await ctx.answerCallbackQuery({ text: "Buyer only", show_alert: true });
+      return;
+    }
+    const { notifyBuyerPaymentRequired, isBuyerPaymentReady } = await import(
+      "../../services/delivery.service.js"
+    );
+    if (!(await isBuyerPaymentReady(deal.id))) {
+      await ctx.answerCallbackQuery({
+        text: "Not ready — seller must lock delivery and set payout wallet first.",
+        show_alert: true,
+      });
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: "Sending payment details…" });
+    const ok = await notifyBuyerPaymentRequired(deal.id, { force: true });
+    await ctx.reply(
+      ok
+        ? "Payment Required sent above — copy the address and pay the exact amount shown."
+        : "Could not send payment details yet. Try again in a minute or /support with your deal code.",
+    );
+  });
+
   bot.callbackQuery(/^bx:addr:(.+)$/, async (ctx) => {
     if (!ctx.from || !ctx.match) return;
     const u = await requireUser(ctx);
@@ -925,19 +976,22 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     try {
+      const part = await prisma.dealParticipant.findUnique({
+        where: { dealId_userId: { dealId: deal.id, userId: u.id } },
+      });
+      const alreadyAccepted = Boolean(part?.termsAcceptedAt);
       const updated = await acceptTerms(u.id, deal.id);
-      await ctx.answerCallbackQuery({ text: "Accepted" });
-      await ctx.reply(await fmtDealCard(updated.id, u.id), { parse_mode: "HTML" });
-      const paySetupFailed = updated.status === "waiting_payment" && !updated.paymentAddress;
-      if (updated.status === "pending_acceptance") {
-        await notifyCounterpartyAfterTermsAccept(updated.id, u.id);
-      } else if (updated.status === "waiting_payment" && updated.paymentAddress) {
-        await notifyBothAfterPaymentLive(updated.id);
+      await ctx.answerCallbackQuery({ text: alreadyAccepted ? "Already accepted" : "Accepted" });
+      const card = await fmtDealCard(updated.id, u.id);
+      const kb = new InlineKeyboard().text("View deal", `d:v:${updated.dealCode}`);
+      await replyOrEditCallbackMessage(ctx, card, { parse_mode: "HTML", reply_markup: kb });
+      if (!alreadyAccepted) {
+        if (updated.status === "pending_acceptance") {
+          await notifyCounterpartyAfterTermsAccept(updated.id, u.id);
+        } else if (updated.status === "waiting_payment" && updated.paymentAddress) {
+          await notifyBothAfterPaymentLive(updated.id);
+        }
       }
-      const ns = paySetupFailed
-        ? nextStepAfterPaymentSetupFailed(updated, u.id)
-        : nextStepForActorReply(updated, u.id);
-      if (ns) await ctx.reply(ns.text, { reply_markup: ns.kb });
     } catch (e) {
       await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
     }

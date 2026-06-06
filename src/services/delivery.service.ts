@@ -15,8 +15,30 @@ import { userFacingDealStatus } from "../modules/deals/user-facing-status.js";
 import { COMMUNITY_TRUST_LINE, DEAL_PROTECTION_BEFORE_PAY, TRUST_OPS_FOOTER } from "../bots/mainBot/trust-copy.js";
 import { formatCryptoAmount, resolveDealPaymentAmounts } from "./fee.service.js";
 import { sellerPayoutReady } from "../modules/deals/seller-payout.service.js";
+import { getRedis } from "../utils/redis.js";
 
 const DIV = "━━━━━━━━━━━━━━━━━━";
+const PAY_REQ_DEDUP_TTL_SEC = 3600;
+
+function paymentRequiredDedupKey(dealId: string, paymentAddress: string): string {
+  return `ogmp:buyer_pay_req:${dealId}:${paymentAddress}`;
+}
+
+export async function countSellerLockedDelivery(dealId: string, sellerId: string | null): Promise<number> {
+  if (!sellerId) return 0;
+  return prisma.dealMessage.count({
+    where: { dealId, lockedForBuyer: true, senderId: sellerId },
+  });
+}
+
+/** True when buyer may pay: vault locked, seller wallet set, escrow address issued. */
+export async function isBuyerPaymentReady(dealId: string): Promise<boolean> {
+  const deal = await prisma.deal.findUnique({ where: { id: dealId } });
+  if (!deal?.sellerId || !deal.paymentAddress) return false;
+  if (deal.status !== "waiting_payment" && deal.status !== "payment_detected") return false;
+  const locked = await countSellerLockedDelivery(dealId, deal.sellerId);
+  return locked > 0 && sellerPayoutReady(deal);
+}
 
 export function sellerFileSecuredText(dealCode: string, fileName: string): string {
   return [
@@ -239,19 +261,25 @@ export function buyerDoesNotUploadDeliveryHint(): string {
   ].join("\n");
 }
 
-export async function notifyBuyerPaymentRequired(dealId: string): Promise<boolean> {
+export async function notifyBuyerPaymentRequired(
+  dealId: string,
+  opts?: { force?: boolean },
+): Promise<boolean> {
   let deal = await prisma.deal.findUnique({
     where: { id: dealId },
     include: { buyer: true, seller: true },
   });
   if (!deal?.buyer || !deal.sellerId) return false;
 
-  const lockedCount = await prisma.dealMessage.count({
-    where: { dealId, lockedForBuyer: true, senderId: deal.sellerId },
-  });
+  const lockedCount = await countSellerLockedDelivery(dealId, deal.sellerId);
   if (lockedCount === 0) return false;
 
-  if (!deal.paymentAddress && sellerPayoutReady(deal)) {
+  if (!sellerPayoutReady(deal)) {
+    await notifyBuyerVaultLockedPaymentPending(dealId);
+    return false;
+  }
+
+  if (!deal.paymentAddress) {
     try {
       const { ensurePaymentInstruction } = await import("../modules/deals/deal.service.js");
       await ensurePaymentInstruction(dealId);
@@ -269,6 +297,15 @@ export async function notifyBuyerPaymentRequired(dealId: string): Promise<boolea
   if (!deal.paymentAddress) {
     await notifyBuyerVaultLockedPaymentPending(dealId);
     return false;
+  }
+
+  const dedupKey = paymentRequiredDedupKey(dealId, deal.paymentAddress);
+  if (!opts?.force) {
+    const sent = await getRedis().get(dedupKey);
+    if (sent) {
+      logger.warn("notify_buyer_payment_skipped_dedup", { dealId, dealCode: deal.dealCode });
+      return true;
+    }
   }
 
   const pay = await prisma.payment.findFirst({ where: { dealId }, orderBy: { createdAt: "desc" } });
@@ -299,11 +336,15 @@ export async function notifyBuyerPaymentRequired(dealId: string): Promise<boolea
     text,
     buttons: buyerPaymentRequiredButtons(deal.dealCode),
   });
+  await getRedis().set(dedupKey, "1", "EX", PAY_REQ_DEDUP_TTL_SEC);
   return true;
 }
 
 /** Buyer nudge when vault is locked but escrow pay address is not ready yet. */
 export async function notifyBuyerVaultLockedPaymentPending(dealId: string): Promise<void> {
+  const dedupKey = `ogmp:vault_pending:${dealId}`;
+  if (await getRedis().get(dedupKey)) return;
+
   const deal = await prisma.deal.findUnique({
     where: { id: dealId },
     include: { buyer: true, seller: true },
@@ -351,6 +392,7 @@ export async function notifyBuyerVaultLockedPaymentPending(dealId: string): Prom
       ],
     });
   }
+  await getRedis().set(dedupKey, "1", "EX", 1800);
 }
 
 export async function onPaymentConfirmedDeliveryFlow(dealId: string): Promise<void> {
@@ -431,7 +473,7 @@ export async function onPaymentConfirmedDeliveryFlow(dealId: string): Promise<vo
 }
 
 export async function resubmitSellerDeliveryNotify(dealId: string): Promise<boolean> {
-  const ok = await notifyBuyerPaymentRequired(dealId);
+  const ok = await notifyBuyerPaymentRequired(dealId, { force: true });
   await appendDealTimelineEvent({
     dealId,
     eventType: "seller_submitted_delivery",

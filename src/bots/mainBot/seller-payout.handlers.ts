@@ -88,7 +88,7 @@ export function registerSellerPayoutHandlers(bot: Bot<Context>): void {
               : 0;
             if (locked > 0) {
               const { notifyBuyerPaymentRequired } = await import("../../services/delivery.service.js");
-              await notifyBuyerPaymentRequired(withPay.id);
+              await notifyBuyerPaymentRequired(withPay.id, { force: true });
             } else {
               await notifyBothAfterPaymentLive(withPay.id);
             }
