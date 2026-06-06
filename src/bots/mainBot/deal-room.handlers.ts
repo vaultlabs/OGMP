@@ -148,20 +148,13 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
       });
       if (sellerLocked) {
         const fn = fileName ?? type;
-        await ctx.reply(sellerFileSecuredText(deal.dealCode, fn), {
+        const notified = await notifyBuyerPaymentRequired(dealId);
+        const tail = notified
+          ? "Buyer was sent Payment Required — they can pay now."
+          : "Set payout wallet on the deal card if needed — buyer pays when ready.";
+        await ctx.reply([sellerFileSecuredText(deal.dealCode, fn), "", tail].join("\n"), {
           reply_markup: sellerFileSecuredKeyboard(deal.dealCode),
         });
-        const notified = await notifyBuyerPaymentRequired(dealId);
-        if (!notified) {
-          await ctx.reply(
-            [
-              "Vault locked.",
-              "",
-              "The buyer will get Payment Required as soon as escrow setup is ready.",
-              "If you have not set your payout wallet yet, do that on the deal card first.",
-            ].join("\n"),
-          );
-        }
         return;
       }
       const sellerNote =

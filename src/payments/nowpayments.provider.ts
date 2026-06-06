@@ -232,6 +232,12 @@ export class NowPaymentsProvider implements PaymentProvider {
     currency: string,
     network: string,
   ): Promise<PaymentAddressResult> {
+    const { validateInvoiceMeetsNowpaymentsMinimum } = await import("./nowpayments-min-amount.js");
+    const minCheck = await validateInvoiceMeetsNowpaymentsMinimum({ currency, network, invoiceAmount });
+    if (!minCheck.ok) {
+      throw new Error(minCheck.message);
+    }
+
     const { apiKey, publicBase } = this.requireKeys();
     let pricing = nowpaymentsPriceAndPayForCreate({ currency, network, expectedAmount: invoiceAmount });
     const orderBase = `${this.name}:${deal.id}:${deal.version}`;

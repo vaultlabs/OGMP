@@ -193,32 +193,32 @@ export async function notifyBothAfterPaymentLive(dealId: string): Promise<void> 
         where: { dealId, lockedForBuyer: true, senderId: deal.sellerId },
       })
     : 0;
-  if (lockedCount > 0 && deal.buyer) {
+  const { sellerPayoutReady } = await import("./seller-payout.service.js");
+  const walletReady = sellerPayoutReady(deal);
+
+  if (lockedCount > 0 && walletReady && deal.buyer) {
     const { notifyBuyerPaymentRequired } = await import("../../services/delivery.service.js");
     await notifyBuyerPaymentRequired(dealId);
   }
 
   if (deal.seller) {
-    const sellerLiveText =
-      lockedCount > 0
-        ? [
-            "What: delivery is already locked in the vault.",
-            "Safe: buyer pays escrow before download.",
-            "Next: if they did not get Payment Required, tap Submit Delivery on the deal card.",
-          ]
-        : [
-            "What: your turn — upload the product for the buyer.",
-            "Safe: buyer pays only after you lock files in the Delivery Vault.",
-            "Next: Deal room → send photo, video, or document (or .zip) → Submit Delivery on the deal card.",
-          ];
+    const sellerLiveText = !walletReady
+      ? "Terms accepted — set your payout wallet, then upload delivery in Deal room."
+      : lockedCount > 0
+        ? "Delivery locked — buyer can pay. Submit Delivery on the deal card if they need a reminder."
+        : "Upload photo/doc/zip in Deal room to lock the vault, then buyer pays.";
     await enqueueDmWithButtons({
       chatId: deal.seller.telegramId.toString(),
-      text: [DIV, "OGMP MM — Deal is live", DIV, "", `Deal: ${deal.dealCode}`, "", ...sellerLiveText].join(
-        "\n",
-      ),
+      text: [DIV, "OGMP MM — Deal live", DIV, "", `Deal: ${deal.dealCode}`, "", sellerLiveText].join("\n"),
       buttons: [
         [
-          { text: lockedCount > 0 ? "Submit Delivery" : "Upload delivery", cb: lockedCount > 0 ? `dl:sub:${deal.dealCode}` : `dr:enter:${deal.dealCode}` },
+          ...(!walletReady
+            ? [{ text: "Set payout wallet", cb: `spw:start:${deal.dealCode}` }]
+            : []),
+          {
+            text: lockedCount > 0 ? "Submit Delivery" : "Upload delivery",
+            cb: lockedCount > 0 ? `dl:sub:${deal.dealCode}` : `dr:enter:${deal.dealCode}`,
+          },
           { text: "View deal", cb: `d:v:${deal.dealCode}` },
         ],
       ],
@@ -230,14 +230,12 @@ export async function notifyBothAfterPaymentLive(dealId: string): Promise<void> 
       chatId: deal.buyer.telegramId.toString(),
       text: [
         DIV,
-        "OGMP MM — Deal is live",
+        "OGMP MM — Deal live",
         DIV,
         "",
         `Deal: ${deal.dealCode}`,
         "",
-        "What: waiting on the seller to upload and lock delivery.",
-        "Safe: you do not upload files — only the seller delivers the product.",
-        "Next: wait for Payment Required DM, then pay in-bot only.",
+        "Waiting for seller to lock delivery in the vault. You will get Payment Required when ready.",
       ].join("\n"),
       buttons: [[{ text: "View deal", cb: `d:v:${deal.dealCode}` }]],
     });

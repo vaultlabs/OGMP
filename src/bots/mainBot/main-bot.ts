@@ -46,7 +46,6 @@ import { createReportSession } from "../../modules/reports/report-session.servic
 import { assertCanOpenNewReport, findSubmittedReviewReportForDeal } from "../../modules/reports/report.service.js";
 import { TERMS_TEXT } from "./messages.js";
 import {
-  COMMUNITY_TRUST_LINE,
   HOW_IT_WORKS_PAGE,
   PREMIUM_WELCOME,
   SAFETY_RULES_PAGE,
@@ -117,24 +116,24 @@ import {
 import { computeCommunityBadge } from "../../modules/users/user-trust-badge.js";
 import { reviewSchema } from "../../modules/deals/deal.validation.js";
 import type { CreateDealInput } from "../../modules/deals/deal.service.js";
-import { userFacingDealStatus, userFacingDeliveryState } from "../../modules/deals/user-facing-status.js";
 import { escapeTelegramHtml } from "../../utils/telegram-html.js";
 import {
   createDealSuccessKeyboard,
   joinSuccessKeyboard,
-  nextStepForActorReply,
   notifyBothAfterPaymentLive,
   notifyCounterpartyAfterTermsAccept,
 } from "../../modules/deals/deal-next-step-guide.service.js";
 import { ADMIN_PANEL_INTRO, adminMenuKeyboard } from "./admin-panel.js";
 import { caseReviewOpenMessage } from "./case-review-copy.js";
 import {
+  computeProcessorInvoiceAmount,
   formatCryptoAmount,
   formatFeeBreakdownLines,
   quoteDealPaymentTotals,
   resolveDealPaymentAmounts,
 } from "../../services/fee.service.js";
 import { maskPayoutAddress } from "../../services/payout.service.js";
+import { formatDealCardHtml, loadDealCardContext } from "./deal-card.js";
 
 function startArg(ctx: Context): string | undefined {
   const t = ctx.message?.text;
@@ -168,21 +167,16 @@ function mainMenuKb(isAdmin: boolean): InlineKeyboard {
   return kb;
 }
 
-function fmtUserLine(u: { telegramId: bigint; username: string | null; firstName: string | null }): string {
-  const un = u.username ? `@${u.username}` : "no username";
-  return `${u.firstName ?? "User"} (${un}, id ${u.telegramId.toString()})`;
-}
-
 async function replyJoinDealSuccess(
   ctx: Context,
   user: User,
   deal: { id: string; dealCode: string },
 ): Promise<void> {
-  await ctx.reply(`Joined deal ${deal.dealCode}.`);
-  await ctx.reply(await fmtDealCard(deal.id, user.id), { parse_mode: "HTML" });
-  await ctx.reply("Next: both sides accept terms.", {
-    reply_markup: joinSuccessKeyboard(deal.dealCode),
-  });
+  const card = await fmtDealCard(deal.id, user.id);
+  await ctx.reply(
+    [`✅ Joined deal <b>${escapeTelegramHtml(deal.dealCode)}</b>`, "", card].join("\n"),
+    { parse_mode: "HTML", reply_markup: joinSuccessKeyboard(deal.dealCode) },
+  );
 }
 
 async function tryJoinDealByToken(ctx: Context, user: User, token: string): Promise<void> {
@@ -259,112 +253,11 @@ async function replyUserProfile(ctx: Context, u: User): Promise<void> {
   );
 }
 
-/**
- * HTML for Telegram <code>parse_mode: "HTML"</code> — user/deal text is escaped; line breaks use newlines.
- * @param viewerUserId Prisma user id of the reader (hides raw escrow address from buyer until seller locks delivery).
- */
+/** Compact HTML deal card with built-in next step for the viewer. */
 async function fmtDealCard(dealId: string, viewerUserId: string | null = null): Promise<string> {
-  const e = escapeTelegramHtml;
-  const d = await prisma.deal.findUnique({
-    where: { id: dealId },
-    include: { buyer: true, seller: true, activeReport: true },
-  });
-  if (!d) return e("Deal not found.");
-  const buyer = d.buyer ? fmtUserLine(d.buyer) : "(pending)";
-  const seller = d.seller ? fmtUserLine(d.seller) : "(pending)";
-  const [sellerLockedCount, msgCount, lastEv, pay] = await Promise.all([
-    d.sellerId
-      ? prisma.dealMessage.count({
-          where: { dealId, lockedForBuyer: true, senderId: d.sellerId },
-        })
-      : Promise.resolve(0),
-    prisma.dealMessage.count({ where: { dealId } }),
-    prisma.dealTimelineEvent.findFirst({
-      where: { dealId },
-      orderBy: { createdAt: "desc" },
-    }),
-    prisma.payment.findFirst({ where: { dealId }, orderBy: { createdAt: "desc" } }),
-  ]);
-  const displayStatus = userFacingDealStatus(d, {
-    hasLockedDelivery: sellerLockedCount > 0,
-    paymentStatus: pay?.status ?? null,
-  });
-  const delivery = userFacingDeliveryState(d.status, sellerLockedCount > 0);
-  const termsPreview = `${d.dealTerms.slice(0, 300)}${d.dealTerms.length > 300 ? "…" : ""}`;
-  const hideEscrowFromBuyer =
-    !!viewerUserId &&
-    d.buyerId === viewerUserId &&
-    (d.status === "waiting_payment" || d.status === "payment_detected") &&
-    sellerLockedCount === 0;
-  const payAmounts = resolveDealPaymentAmounts(d);
-  const isBuyerView = !!viewerUserId && d.buyerId === viewerUserId;
-
-  const lines: string[] = [
-    "━━━━━━━━━━━━━━━━━━",
-    "OGMP MM — Deal Room",
-    "━━━━━━━━━━━━━━━━━━",
-    "",
-    `<b>Deal ID</b>: ${e(d.dealCode)}`,
-    `<b>Status</b>: ${e(displayStatus)}${d.frozen ? " (frozen)" : ""}`,
-    `<b>Buyer</b>: ${e(buyer)}`,
-    `<b>Seller</b>: ${e(seller)}`,
-    `<b>Deal amount</b>: ${e(formatCryptoAmount(payAmounts.dealAmount))} ${e(d.currency)} (${e(d.network)})`,
-    `<b>OGMP fee (1%)</b>: ${e(formatCryptoAmount(payAmounts.escrowFee))} ${e(d.currency)} (${e(String(d.feePayer))} pays)`,
-    payAmounts.networkFeeEstimate.gt(0)
-      ? `<b>NOWPayments fee</b>: ${e(formatCryptoAmount(payAmounts.networkFeeEstimate))} ${e(d.currency)}`
-      : `<b>NOWPayments fee</b>: ${e("quoted when payment opens")}`,
-    `<b>Pay exactly</b>: ${e(formatCryptoAmount(payAmounts.buyerPays))} ${e(d.currency)}`,
-    `<b>Seller receives</b>: ${e(formatCryptoAmount(payAmounts.sellerReceives))} ${e(d.currency)}`,
-    d.sellerId === viewerUserId
-      ? `<b>Your payout wallet</b>: ${sellerPayoutReady(d) ? e(maskPayoutAddress(d.sellerPayoutAddress!)) : e("not set — required before buyer pays")}`
-      : "",
-    `<b>Escrow step</b>: ${pay ? e(pay.status.replace(/_/g, " ")) : "—"}`,
-    `<b>Delivery Vault</b>: ${e(delivery)}`,
-    `<b>Deal Protection</b>: ${d.frozen ? e("paused — Case Review") : e("on")}`,
-    d.activeReport
-      ? `<b>Case Review</b>: ${e(d.activeReport.reportCode)} (${e(d.activeReport.status.replace(/_/g, " "))})`
-      : "<b>Case Review</b>: none open",
-    `<b>Files submitted</b>: ${String(msgCount)}`,
-    "Folders: send .zip / .rar / .7z or one file per message (no folder upload).",
-    `<b>Last activity</b>: ${e(d.lastActivityAt.toISOString().slice(0, 19))}Z`,
-    `<b>Created</b>: ${e(d.createdAt.toISOString().slice(0, 10))}`,
-    `<b>Terms</b>:
-${e(termsPreview)}`,
-  ];
-  if (lastEv) lines.push(`<b>Latest event</b>: ${e(lastEv.eventType)}`);
-  if (
-    isBuyerView &&
-    sellerLockedCount > 0 &&
-    !d.paymentAddress &&
-    (d.status === "waiting_payment" || d.status === "payment_detected")
-  ) {
-    lines.push(
-      "",
-      `<b>Escrow pay</b>: ${e("Delivery locked — pay address not ready yet. Seller must set payout wallet; tap Show payment details on the deal card when available.")}`,
-      `<i>${e("Do not send crypto until the escrow address appears here.")}</i>`,
-    );
-  } else if (d.paymentAddress && d.status !== "pending_acceptance") {
-    if (hideEscrowFromBuyer) {
-      lines.push(
-        "",
-        `<b>Escrow pay</b>: After the Delivery Vault locks, you’ll get a DM with the address. Until then, no payment.`,
-        `<i>${e("Never use an address from outside this bot.")}</i>`,
-      );
-    } else {
-      lines.push(
-        "",
-        `<b>Escrow pay</b>:`,
-        `<code>${e(d.paymentAddress)}</code>`,
-        `<b>Pay exactly</b>: ${e(formatCryptoAmount(payAmounts.buyerPays))} ${e(d.currency)} on ${e(d.network)}`,
-        isBuyerView
-          ? `<i>${e("Send this exact total so the seller receives the deal amount after fees.")}</i>`
-          : `<i>${e("Buyer must send the Pay exactly total. Wrong network = loss.")}</i>`,
-        `<i>${e("Never pay outside OGMP MM.")}</i>`,
-      );
-    }
-  }
-  lines.push("", `<i>${e(TRUST_OPS_FOOTER)}</i>`, `<i>${e(COMMUNITY_TRUST_LINE)}</i>`);
-  return lines.join("\n");
+  const loaded = await loadDealCardContext(dealId, viewerUserId);
+  if (!loaded) return escapeTelegramHtml("Deal not found.");
+  return formatDealCardHtml(loaded.deal, loaded.ctx, viewerUserId);
 }
 
 export function createMainBot(): Bot<Context> {
@@ -521,14 +414,14 @@ export function createMainBot(): Bot<Context> {
   bot.callbackQuery(/^m:menu$/, async (ctx) => {
     if (!ctx.from) return;
     await ctx.answerCallbackQuery();
-    await ctx.reply(PREMIUM_WELCOME, {
+    await replyOrEditCallbackMessage(ctx, PREMIUM_WELCOME, {
       reply_markup: mainMenuKb(isAdminTelegramId(BigInt(ctx.from.id))),
     });
   });
 
   bot.callbackQuery(/^m:how$/, async (ctx) => {
     await ctx.answerCallbackQuery();
-    await ctx.reply(HOW_IT_WORKS_PAGE, {
+    await replyOrEditCallbackMessage(ctx, HOW_IT_WORKS_PAGE, {
       reply_markup: new InlineKeyboard()
         .text("Create Deal", "m:create")
         .text("Join Deal", "m:join")
@@ -539,7 +432,7 @@ export function createMainBot(): Bot<Context> {
 
   bot.callbackQuery(/^m:why$/, async (ctx) => {
     await ctx.answerCallbackQuery();
-    await ctx.reply(WHY_TRUST_PAGE, {
+    await replyOrEditCallbackMessage(ctx, WHY_TRUST_PAGE, {
       reply_markup: new InlineKeyboard()
         .text("Create Deal", "m:create")
         .text("How It Works", "m:how")
@@ -550,7 +443,7 @@ export function createMainBot(): Bot<Context> {
 
   bot.callbackQuery(/^m:safety$/, async (ctx) => {
     await ctx.answerCallbackQuery();
-    await ctx.reply(SAFETY_RULES_PAGE, {
+    await replyOrEditCallbackMessage(ctx, SAFETY_RULES_PAGE, {
       reply_markup: new InlineKeyboard().text("I Understand", "m:menu").row().text("Back", "m:menu"),
     });
   });
@@ -637,43 +530,10 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     await ctx.answerCallbackQuery();
-    const { countSellerLockedDelivery, isBuyerPaymentReady } = await import(
-      "../../services/delivery.service.js"
-    );
-    const text = await fmtDealCard(deal.id, u.id);
-    const lockedPre = await countSellerLockedDelivery(deal.id, deal.sellerId);
-    const buyerCanPay = await isBuyerPaymentReady(deal.id);
-    let hint = "";
-    if (deal.status === "pending_acceptance") {
-      hint =
-        "\n\nWhat: terms step.\nSafe: no escrow pay until Delivery Vault locks.\nNext: both accept terms, then seller fills the vault.";
-    } else if (deal.status === "waiting_payment" || deal.status === "payment_detected") {
-      if (deal.buyerId === u.id) {
-        hint = buyerCanPay
-          ? "\n\nWhat: your turn to pay escrow.\nSafe: use the address above or tap Show payment details.\nNext: send exact amount, then I Have Paid / Check Payment."
-          : lockedPre
-            ? "\n\nWhat: delivery is locked — waiting on seller payout wallet or pay address.\nSafe: do not pay yet.\nNext: seller must Set payout wallet; you will get Payment Required when ready."
-            : "\n\nWhat: waiting on the seller to upload and lock delivery.\nSafe: you do not upload the product.\nNext: wait for Payment Required — do not pay until then.";
-      } else if (deal.sellerId === u.id) {
-        hint = lockedPre
-          ? !sellerPayoutReady(deal)
-            ? "\n\nWhat: delivery locked — set payout wallet so buyer can pay.\nSafe: files stay locked until buyer pays.\nNext: Set payout wallet, then Submit Delivery."
-            : "\n\nWhat: delivery locked — buyer can pay now.\nSafe: files stay locked until buyer pays.\nNext: Submit Delivery if they did not get Payment Required."
-          : "\n\nWhat: you upload the product — buyer pays after the vault locks.\nSafe: files stay locked until buyer pays.\nNext: Deal room → photo/doc/zip → Submit Delivery."      } else {
-        hint = "\n\nWhat: deal is starting.\nSafe: follow in-bot steps only.\nNext: wait for participants.";
-      }
-    } else if (deal.status === "funded") {
-      if (deal.sellerId === u.id) {
-        hint =
-          "\n\nWhat: buyer can access the vault.\nSafe: escrow still holds funds.\nNext: add files if needed, or Mark delivered.";
-      } else if (deal.buyerId === u.id) {
-        hint = "\n\nWhat: Delivery Vault unlocked.\nSafe: escrow until Buyer Review ends.\nNext: check DMs / Download Files.";
-      }
-    } else if (deal.status === "item_delivered" && deal.buyerId === u.id) {
-      hint = "\n\nWhat: Buyer Review.\nSafe: escrow until you confirm.\nNext: Confirm Received — or Open Case if wrong.";
-    } else if (deal.status === "item_delivered" && deal.sellerId === u.id) {
-      hint = "\n\nWhat: Buyer Review.\nSafe: funds still in escrow.\nNext: wait for buyer confirm or Case Review.";
-    }
+    const loaded = await loadDealCardContext(deal.id, u.id);
+    const text = loaded ? formatDealCardHtml(loaded.deal, loaded.ctx, u.id) : await fmtDealCard(deal.id, u.id);
+    const lockedPre = loaded?.ctx.sellerLockedCount ?? 0;
+    const buyerCanPay = loaded?.ctx.buyerCanPay ?? false;
     const kb = new InlineKeyboard();
     if (deal.status === "pending_acceptance") {
       const part = await prisma.dealParticipant.findUnique({
@@ -728,7 +588,7 @@ export function createMainBot(): Bot<Context> {
     }
     kb.text("Timeline", `d:tl:${deal.dealCode}`).text("Delivery log", `d:pr:${deal.dealCode}`).row();
     kb.text("Open Case", `d:rp:${deal.dealCode}`);
-    await replyOrEditCallbackMessage(ctx, text + hint, { parse_mode: "HTML", reply_markup: kb });
+    await replyOrEditCallbackMessage(ctx, text, { parse_mode: "HTML", reply_markup: kb });
   });
 
   bot.callbackQuery(/^d:tl:(.+)$/, async (ctx) => {
@@ -860,12 +720,12 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     const notified = await resubmitSellerDeliveryNotify(deal.id);
-    await ctx.answerCallbackQuery({ text: notified ? "Buyer notified" : "Buyer ping queued" });
-    await ctx.reply(
-      notified
-        ? "The buyer was sent Payment Required — they can pay escrow now."
-        : "Delivery is locked but Payment Required is not ready yet (payout wallet or payment setup). The buyer was told to wait; finish Set payout wallet if needed.",
-    );
+    await ctx.answerCallbackQuery({
+      text: notified
+        ? "Buyer sent Payment Required"
+        : "Not ready — set payout wallet or wait for pay address",
+      show_alert: !notified,
+    });
   });
 
   bot.callbackQuery(/^bx:(?:pay|cp):(.+)$/, async (ctx) => {
@@ -877,8 +737,7 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     const { runBuyerPaymentCheck } = await import("../../modules/payments/buyer-payment-check.service.js");
-    await ctx.answerCallbackQuery();
-    await ctx.reply("Checking payment status…");
+    await ctx.answerCallbackQuery({ text: "Checking payment…" });
     const msg = await runBuyerPaymentCheck(deal.id, BigInt(ctx.from.id));
     await ctx.reply(msg);
   });
@@ -954,16 +813,9 @@ export function createMainBot(): Bot<Context> {
     await ctx.answerCallbackQuery();
     const { sendBuyerDeliveryBundleToChat } = await import("../../services/buyer-delivery-send.service.js");
     const r = await sendBuyerDeliveryBundleToChat({ buyerTelegramId: BigInt(ctx.from.id), dealId: deal.id });
-    if (r.skipped) {
-      await ctx.reply("Files were already sent. Scroll up in this chat for OGMP MM delivery messages.");
-    } else {
-      await ctx.reply(`Sent ${r.sent} file(s). Review carefully before confirming release.`);
-    }
-    const fresh = await prisma.deal.findUnique({ where: { id: deal.id } });
-    if (fresh) {
-      const ns = nextStepForActorReply(fresh, u.id);
-      if (ns) await ctx.reply(ns.text, { reply_markup: ns.kb });
-    }
+    await ctx.answerCallbackQuery({
+      text: r.skipped ? "Already sent — scroll up" : `Sent ${r.sent} file(s)`,
+    });
   });
 
   bot.callbackQuery(/^d:a:(.+)$/, async (ctx) => {
@@ -1006,9 +858,9 @@ export function createMainBot(): Bot<Context> {
     try {
       const d = await markDelivered(u.id, deal.id);
       await ctx.answerCallbackQuery({ text: "Marked delivered" });
-      await ctx.reply(await fmtDealCard(d.id, u.id), { parse_mode: "HTML" });
-      const ns = nextStepForActorReply(d, u.id);
-      if (ns) await ctx.reply(ns.text, { reply_markup: ns.kb });
+      const card = await fmtDealCard(d.id, u.id);
+      const kb = new InlineKeyboard().text("View deal", `d:v:${d.dealCode}`);
+      await replyOrEditCallbackMessage(ctx, card, { parse_mode: "HTML", reply_markup: kb });
     } catch (e) {
       await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
     }
@@ -1059,9 +911,11 @@ export function createMainBot(): Bot<Context> {
     try {
       const d = await buyerConfirmRelease(u.id, deal.id);
       await ctx.answerCallbackQuery({ text: "Funds released" });
-      await ctx.reply(await fmtDealCard(d.id, u.id), { parse_mode: "HTML" });
-      const ns = nextStepForActorReply(d, u.id);
-      if (ns) await ctx.reply(ns.text, { reply_markup: ns.kb });
+      const card = await fmtDealCard(d.id, u.id);
+      await replyOrEditCallbackMessage(ctx, card, {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard().text("View deal", `d:v:${d.dealCode}`),
+      });
     } catch (e) {
       await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
     }
@@ -1576,9 +1430,60 @@ export function createMainBot(): Bot<Context> {
     if (!ctx.from || !ctx.match) return;
     const cur = ctx.match[1] as CreateDealInput["currency"];
     const net = ctx.match[2]!;
+    const network = net === "BTC" ? "BTC" : net;
     const w = await getCreateWizard(BigInt(ctx.from.id));
     if (!w || w.step !== "network") {
       await ctx.answerCallbackQuery({ text: "Wizard expired — /create", show_alert: true });
+      return;
+    }
+    const { getActiveFeeSettings, computeFeeBreakdown } = await import("../../services/fee.service.js");
+    const { validateInvoiceMeetsNowpaymentsMinimum } = await import("../../payments/nowpayments-min-amount.js");
+    const feeRow = await getActiveFeeSettings();
+    const breakdown = computeFeeBreakdown({
+      dealAmount: new Prisma.Decimal(w.amount),
+      amountUsdForCaps: new Prisma.Decimal(w.amount),
+      networkFeeEstimate: new Prisma.Decimal(0),
+      feePayer: "buyer",
+      percentage: feeRow.percentage,
+      minimumUsd: feeRow.minimumUsd,
+      maximumUsd: feeRow.maximumUsd,
+      fixedUsd: feeRow.fixedUsd,
+    });
+    const invoice = computeProcessorInvoiceAmount({
+      amount: new Prisma.Decimal(w.amount),
+      feeAmount: breakdown.escrowFee,
+      feePayer: "buyer",
+    });
+    const minCheck = await validateInvoiceMeetsNowpaymentsMinimum({
+      currency: cur,
+      network,
+      invoiceAmount: invoice.toString(),
+    });
+    if (!minCheck.ok) {
+      await ctx.answerCallbackQuery({ text: minCheck.message.slice(0, 180), show_alert: true });
+      return;
+    }
+    if (w.creatorRole === "seller") {
+      await setCreateWizard(BigInt(ctx.from.id), {
+        step: "payout_wallet",
+        creatorRole: "seller",
+        title: w.title,
+        description: w.description,
+        amount: w.amount,
+        currency: cur,
+        network,
+        partyTermsExtra: w.partyTermsExtra ?? "",
+      });
+      await ctx.answerCallbackQuery();
+      await ctx.reply(
+        [
+          `Payout wallet for <b>${cur}</b> (${network})`,
+          "",
+          "Send the wallet address where you want to receive funds on release.",
+          "Double-check the network — wrong network = lost funds.",
+        ].join("\n"),
+        { parse_mode: "HTML" },
+      );
       return;
     }
     await setCreateWizard(BigInt(ctx.from.id), {
@@ -1588,10 +1493,48 @@ export function createMainBot(): Bot<Context> {
       description: w.description,
       amount: w.amount,
       currency: cur,
-      network: net === "BTC" ? "BTC" : net,
+      network,
       partyTermsExtra: w.partyTermsExtra ?? "",
     });
     await ctx.answerCallbackQuery();
+    await ctx.reply("Who pays the escrow fee?", {
+      reply_markup: new InlineKeyboard()
+        .text("Buyer", "w:fee:buyer")
+        .text("Seller", "w:fee:seller")
+        .text("Split", "w:fee:split"),
+    });
+  });
+
+  bot.callbackQuery(/^w:pw:(yes|redo)$/, async (ctx) => {
+    if (!ctx.from || !ctx.match) return;
+    const w = await getCreateWizard(BigInt(ctx.from.id));
+    if (!w || w.step !== "payout_wallet" || w.creatorRole !== "seller") {
+      await ctx.answerCallbackQuery({ text: "Wizard expired — /create", show_alert: true });
+      return;
+    }
+    if (ctx.match[1] === "redo") {
+      await setCreateWizard(BigInt(ctx.from.id), { ...w, payoutAddressDraft: undefined });
+      await ctx.answerCallbackQuery({ text: "Send a new address" });
+      await ctx.reply("Send your payout wallet address in one message.");
+      return;
+    }
+    const addr = w.payoutAddressDraft?.trim();
+    if (!addr || addr.length < 8) {
+      await ctx.answerCallbackQuery({ text: "Send wallet address first", show_alert: true });
+      return;
+    }
+    await setCreateWizard(BigInt(ctx.from.id), {
+      step: "fee_payer",
+      creatorRole: "seller",
+      title: w.title,
+      description: w.description,
+      amount: w.amount,
+      currency: w.currency,
+      network: w.network,
+      partyTermsExtra: w.partyTermsExtra ?? "",
+      sellerPayoutAddress: addr,
+    });
+    await ctx.answerCallbackQuery({ text: "Wallet saved" });
     await ctx.reply("Who pays the escrow fee?", {
       reply_markup: new InlineKeyboard()
         .text("Buyer", "w:fee:buyer")
@@ -1621,6 +1564,29 @@ export function createMainBot(): Bot<Context> {
       network: draft.network,
       amounts: preview,
     });
+    let minLine = "";
+    if (loadConfig().PAYMENT_PROVIDER === "nowpayments") {
+      const { fetchNowpaymentsMinPaymentAmount, formatNowpaymentsMinimumHint, validateInvoiceMeetsNowpaymentsMinimum } =
+        await import("../../payments/nowpayments-min-amount.js");
+      const invoice = computeProcessorInvoiceAmount({
+        amount: new Prisma.Decimal(draft.amount),
+        feeAmount: preview.escrowFee,
+        feePayer: draft.feePayer,
+      });
+      const minCheck = await validateInvoiceMeetsNowpaymentsMinimum({
+        currency: draft.currency,
+        network: draft.network,
+        invoiceAmount: invoice.toString(),
+      });
+      const minInfo = await fetchNowpaymentsMinPaymentAmount({
+        currency: draft.currency,
+        network: draft.network,
+      });
+      if (minInfo) {
+        minLine = formatNowpaymentsMinimumHint(minInfo, draft.currency, draft.network);
+        if (!minCheck.ok) minLine = `⚠️ ${minCheck.message}`;
+      }
+    }
     await setCreateWizard(BigInt(ctx.from.id), { step: "confirm", draft });
     await ctx.answerCallbackQuery();
     await ctx.reply(
@@ -1630,6 +1596,7 @@ export function createMainBot(): Bot<Context> {
         `Title: ${draft.title}`,
         "",
         ...feeLines,
+        ...(minLine ? ["", minLine] : []),
         "",
         `Written party terms / guarantees: ${customTerms ? "Yes (see Terms on the deal card)" : "No — standard escrow wording only"}`,
       ].join("\n"),
@@ -1650,18 +1617,47 @@ export function createMainBot(): Bot<Context> {
     const u = await requireUser(ctx);
     if (!u) return;
     try {
+      if (loadConfig().PAYMENT_PROVIDER === "nowpayments") {
+        const { validateInvoiceMeetsNowpaymentsMinimum } = await import("../../payments/nowpayments-min-amount.js");
+        const totals = await quoteDealPaymentTotals({
+          amount: w.draft.amount,
+          currency: w.draft.currency,
+          network: w.draft.network,
+          feePayer: w.draft.feePayer,
+        });
+        const invoice = computeProcessorInvoiceAmount({
+          amount: new Prisma.Decimal(w.draft.amount),
+          feeAmount: totals.escrowFee,
+          feePayer: w.draft.feePayer,
+        });
+        const minCheck = await validateInvoiceMeetsNowpaymentsMinimum({
+          currency: w.draft.currency,
+          network: w.draft.network,
+          invoiceAmount: invoice.toString(),
+        });
+        if (!minCheck.ok) {
+          await ctx.answerCallbackQuery({ text: minCheck.message.slice(0, 180), show_alert: true });
+          return;
+        }
+      }
       const deal = await createDeal(u, w.draft);
       await clearCreateWizard(BigInt(ctx.from.id));
       await ctx.answerCallbackQuery({ text: "Created" });
       const cfg = loadConfig();
       const me = cfg.BOT_PUBLIC_USERNAME ?? (await ctx.api.getMe()).username;
       const link = me ? `https://t.me/${me}?start=join_${deal.inviteToken}` : `Invite token:\n${deal.inviteToken}`;
-      await ctx.reply(`Deal ${deal.dealCode} is ready.\nSend this invite to your counterparty:`);
-      await ctx.reply(link);
-      await ctx.reply(await fmtDealCard(deal.id, u.id), { parse_mode: "HTML" });
-      await ctx.reply("Next: they join, then both sides accept terms.", {
-        reply_markup: createDealSuccessKeyboard(deal.dealCode),
-      });
+      const card = await fmtDealCard(deal.id, u.id);
+      await ctx.reply(
+        [
+          `✅ Deal <b>${escapeTelegramHtml(deal.dealCode)}</b> created`,
+          "",
+          "Send this invite to your counterparty:",
+          link,
+          "",
+          card,
+        ].join("\n"),
+        { parse_mode: "HTML", reply_markup: createDealSuccessKeyboard(deal.dealCode) },
+      );
     } catch (e) {
       await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
     }
@@ -1818,16 +1814,45 @@ export function createMainBot(): Bot<Context> {
         amount: text,
         partyTermsExtra: w.partyTermsExtra ?? "",
       });
-      await ctx.reply("Choose network:", {
-        reply_markup: new InlineKeyboard()
-          .text("USDT TRC20", "w:net:USDT:TRC20")
-          .text("USDT ERC20", "w:net:USDT:ERC20")
-          .row()
-          .text("BTC", "w:net:BTC:BTC")
-          .text("ETH", "w:net:ETH:ETH")
-          .row()
-          .text("LTC", "w:net:LTC:LTC"),
-      });
+      await ctx.reply(
+        [
+          "Choose network:",
+          "",
+          "Tip: USDT TRC20 needs about <b>$10+</b> minimum via NOWPayments. LTC often works for smaller test amounts.",
+        ].join("\n"),
+        {
+          parse_mode: "HTML",
+          reply_markup: new InlineKeyboard()
+            .text("USDT TRC20", "w:net:USDT:TRC20")
+            .text("USDT ERC20", "w:net:USDT:ERC20")
+            .row()
+            .text("BTC", "w:net:BTC:BTC")
+            .text("ETH", "w:net:ETH:ETH")
+            .row()
+            .text("LTC", "w:net:LTC:LTC"),
+        },
+      );
+      return;
+    }
+    if (w.step === "payout_wallet" && w.creatorRole === "seller") {
+      if (text.length < 8) {
+        await ctx.reply("Address too short. Send a valid wallet address.");
+        return;
+      }
+      await setCreateWizard(BigInt(ctx.from.id), { ...w, payoutAddressDraft: text.slice(0, 256) });
+      await ctx.reply(
+        [
+          "Confirm payout wallet:",
+          maskPayoutAddress(text.trim()),
+          "",
+          "Wrong network = lost funds.",
+        ].join("\n"),
+        {
+          reply_markup: new InlineKeyboard()
+            .text("Confirm wallet", "w:pw:yes")
+            .text("Re-enter", "w:pw:redo"),
+        },
+      );
       return;
     }
     return next();

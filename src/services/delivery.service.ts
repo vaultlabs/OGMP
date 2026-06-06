@@ -12,7 +12,7 @@ import {
   notifyDmWithButtonsCritical,
 } from "../modules/notifications/critical-notify.service.js";
 import { userFacingDealStatus } from "../modules/deals/user-facing-status.js";
-import { COMMUNITY_TRUST_LINE, DEAL_PROTECTION_BEFORE_PAY, TRUST_OPS_FOOTER } from "../bots/mainBot/trust-copy.js";
+import { COMMUNITY_TRUST_LINE, TRUST_OPS_FOOTER } from "../bots/mainBot/trust-copy.js";
 import { formatCryptoAmount, resolveDealPaymentAmounts } from "./fee.service.js";
 import { sellerPayoutReady } from "../modules/deals/seller-payout.service.js";
 import { getRedis } from "../utils/redis.js";
@@ -128,7 +128,7 @@ export function buyerPaymentRequiredText(params: {
     "",
     COMMUNITY_TRUST_LINE,
   ].join("\n");
-  return `${DEAL_PROTECTION_BEFORE_PAY}\n\n${core}`;
+  return core;
 }
 
 export function buyerPaymentRequiredButtons(dealCode: string): { text: string; cb: string }[][] {

@@ -105,7 +105,8 @@ export async function createDeal(creator: User, input: CreateDealInput): Promise
         feeAmount: breakdown.escrowFee,
         feePayer: input.feePayer,
         networkFeeEstimate: breakdown.networkFeeEstimate,
-        sellerPayoutAddress: input.sellerPayoutAddress,
+        sellerPayoutAddress: input.sellerPayoutAddress?.trim() || null,
+        sellerPayoutConfirmedAt: input.sellerPayoutAddress?.trim() ? new Date() : null,
         buyerRefundAddress: input.buyerRefundAddress,
         status: "pending_acceptance",
       },
@@ -247,17 +248,20 @@ export async function acceptTerms(userId: string, dealId: string): Promise<Deal>
           });
           if (d) {
             const buttons = [[{ text: "View deal", cb: `d:v:${d.dealCode}` }]];
+            const detail = errStr.includes("NOWPayments minimum") || errStr.toLowerCase().includes("too small")
+              ? errStr.replace(/^Error:\s*/i, "").replace(/^NOWPayments:\s*/i, "")
+              : undefined;
             if (d.buyer && d.buyer.id !== userId) {
               await enqueueDealParticipantNotify({
                 targetTelegramId: d.buyer.telegramId,
-                text: paymentAddressSetupFailedBuyerMessage(d.dealCode),
+                text: paymentAddressSetupFailedBuyerMessage(d.dealCode, detail),
                 buttons,
               });
             }
             if (d.seller && d.seller.id !== userId) {
               await enqueueDealParticipantNotify({
                 targetTelegramId: d.seller.telegramId,
-                text: paymentAddressSetupFailedSellerMessage(d.dealCode),
+                text: paymentAddressSetupFailedSellerMessage(d.dealCode, detail),
                 buttons,
               });
             }

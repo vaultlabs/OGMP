@@ -14,11 +14,21 @@ export function replyTextForCaughtError(e: unknown): string {
 }
 
 /** Buyer DM when escrow payment address could not be created (one clear next step). */
-export function paymentAddressSetupFailedBuyerMessage(dealCode: string): string {
-  return `Deal ${dealCode}: pay address is not ready yet. Next: wait 1 minute → View deal again. Do not send crypto until the deal card shows the pay address. If it repeats: /support with this deal code only.`;
+export function paymentAddressSetupFailedBuyerMessage(dealCode: string, detail?: string): string {
+  const extra = detail?.trim()
+    ? `\n\nReason: ${detail.trim()}`
+    : "";
+  return `Deal ${dealCode}: pay address is not ready yet.${extra}\n\nNext: wait 1 minute → View deal again. Do not send crypto until the deal card shows the pay address. If it repeats: /support with this deal code only.`;
 }
 
 /** Seller DM when payment address creation failed (one clear next step). */
-export function paymentAddressSetupFailedSellerMessage(dealCode: string): string {
-  return `Deal ${dealCode}: buyer pay address did not issue yet (our side). Next: wait 1 minute → View deal. Do not ask the buyer to send crypto until a pay address appears on the deal card. If it repeats: /support with this deal code only.`;
+export function paymentAddressSetupFailedSellerMessage(dealCode: string, detail?: string): string {
+  const extra = detail?.trim()
+    ? `\n\nReason: ${detail.trim()}`
+    : "";
+  return `Deal ${dealCode}: buyer pay address did not issue yet (our side).${extra}\n\nNext: wait 1 minute → View deal. Do not ask the buyer to send crypto until a pay address appears on the deal card. If it repeats: /support with this deal code only.`;
+}
+
+export function paymentAddressAmountTooSmallMessage(currency: string, network: string, minHint: string): string {
+  return `Amount too small for ${currency} (${network}). ${minHint}. Use a higher deal amount (often $10+ USD for USDT TRC20) and create a new deal.`;
 }

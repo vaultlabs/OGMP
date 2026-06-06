@@ -4,6 +4,7 @@ import { assertFileAllowed } from "../../utils/file-safety.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "../../utils/errors.js";
 import { appendDealTimelineEvent } from "../dealTimeline/timeline.service.js";
 import { enqueueDealParticipantNotify } from "../notifications/notificationQueue.service.js";
+import { getRedis } from "../../utils/redis.js";
 
 export type DealMessageWithSender = Awaited<ReturnType<typeof listDealMessages>>[number];
 
@@ -64,14 +65,24 @@ export async function saveDealRoomMessage(params: {
     metadata: { messageType: params.messageType, fileName: params.fileName, locked: params.lockedForBuyer },
   });
   if (params.skipCounterpartyNotification) return;
-  const other =
-    deal.buyerId === params.senderUserId ? deal.sellerId : deal.buyerId;
+  if (params.messageType === "text") return;
+  const dedupKey = `ogmp:room_ping:${params.dealId}:${params.senderUserId}`;
+  try {
+    const pinged = await getRedis().get(dedupKey);
+    if (pinged) return;
+    await getRedis().set(dedupKey, "1", "EX", 300);
+  } catch {
+    /* continue without dedup */
+  }
+  const other = deal.buyerId === params.senderUserId ? deal.sellerId : deal.buyerId;
   if (other) {
     const otherUser = await prisma.user.findUnique({ where: { id: other } });
     if (otherUser) {
+      const label =
+        params.lockedForBuyer ? "Seller locked a delivery file" : "New file in deal room";
       await enqueueDealParticipantNotify({
         targetTelegramId: otherUser.telegramId,
-        text: `Update on deal ${deal.dealCode} (deal room).`,
+        text: `${label} — ${deal.dealCode}. Tap View deal.`,
         buttons: [[{ text: "View deal", cb: `d:v:${deal.dealCode}` }]],
       });
     }

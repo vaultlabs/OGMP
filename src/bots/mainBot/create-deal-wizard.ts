@@ -34,6 +34,17 @@ export type CreateDealWizard =
       partyTermsExtra?: string;
     }
   | {
+      step: "payout_wallet";
+      creatorRole: "seller";
+      title: string;
+      description: string;
+      amount: string;
+      currency: CreateDealInput["currency"];
+      network: string;
+      partyTermsExtra?: string;
+      payoutAddressDraft?: string;
+    }
+  | {
       step: "fee_payer";
       creatorRole: ParticipantRole;
       title: string;
@@ -42,6 +53,7 @@ export type CreateDealWizard =
       currency: CreateDealInput["currency"];
       network: string;
       partyTermsExtra?: string;
+      sellerPayoutAddress?: string;
     }
   | { step: "confirm"; draft: CreateDealInput };
 
@@ -87,7 +99,8 @@ export function createWizardExpectsPlainText(w: CreateDealWizard | null): boolea
     w.step === "title" ||
     w.step === "description" ||
     w.step === "party_terms_text" ||
-    w.step === "amount"
+    w.step === "amount" ||
+    w.step === "payout_wallet"
   );
 }
 
@@ -106,5 +119,6 @@ export function toCreateDealInput(
     currency: base.currency,
     network: base.network,
     feePayer,
+    sellerPayoutAddress: base.sellerPayoutAddress,
   };
 }
