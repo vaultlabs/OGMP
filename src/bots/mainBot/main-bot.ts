@@ -134,6 +134,16 @@ import {
 } from "../../services/fee.service.js";
 import { maskPayoutAddress } from "../../services/payout.service.js";
 import { formatDealCardHtml, loadDealCardContext } from "./deal-card.js";
+import {
+  amountPromptMessage,
+  amountTooSmallMessage,
+  coinChoiceKeyboard,
+  coinChoiceMessage,
+  confirmDealHeader,
+  feePayerPrompt,
+  invalidAmountMessage,
+  payoutWalletPrompt,
+} from "./wizard-copy.js";
 
 function startArg(ctx: Context): string | undefined {
   const t = ctx.message?.text;
@@ -476,14 +486,14 @@ export function createMainBot(): Bot<Context> {
       return;
     }
     await setCreateWizard(BigInt(ctx.from.id), {
-      step: "amount",
+      step: "network",
       creatorRole: w.creatorRole,
       title: w.title,
       description: w.description,
       partyTermsExtra: "",
     });
     await ctx.answerCallbackQuery();
-    await ctx.reply("Enter numeric deal amount (crypto units, e.g. `100.5`):", { parse_mode: "Markdown" });
+    await ctx.reply(coinChoiceMessage(), { parse_mode: "HTML", reply_markup: coinChoiceKeyboard() });
   });
 
   bot.callbackQuery(/^w:party:custom$/, async (ctx) => {
@@ -1425,7 +1435,7 @@ export function createMainBot(): Bot<Context> {
     await ctx.reply(ADMIN_PANEL_INTRO, { reply_markup: adminMenuKeyboard() });
   });
 
-  /** Network presets for wizard */
+  /** Coin/network presets for wizard — pick coin before typing amount. */
   bot.callbackQuery(/^w:net:(USDT|BTC|ETH|LTC):(TRC20|ERC20|BTC|ETH|LTC)$/, async (ctx) => {
     if (!ctx.from || !ctx.match) return;
     const cur = ctx.match[1] as CreateDealInput["currency"];
@@ -1436,73 +1446,17 @@ export function createMainBot(): Bot<Context> {
       await ctx.answerCallbackQuery({ text: "Wizard expired — /create", show_alert: true });
       return;
     }
-    const { getActiveFeeSettings, computeFeeBreakdown } = await import("../../services/fee.service.js");
-    const { validateInvoiceMeetsNowpaymentsMinimum } = await import("../../payments/nowpayments-min-amount.js");
-    const feeRow = await getActiveFeeSettings();
-    const breakdown = computeFeeBreakdown({
-      dealAmount: new Prisma.Decimal(w.amount),
-      amountUsdForCaps: new Prisma.Decimal(w.amount),
-      networkFeeEstimate: new Prisma.Decimal(0),
-      feePayer: "buyer",
-      percentage: feeRow.percentage,
-      minimumUsd: feeRow.minimumUsd,
-      maximumUsd: feeRow.maximumUsd,
-      fixedUsd: feeRow.fixedUsd,
-    });
-    const invoice = computeProcessorInvoiceAmount({
-      amount: new Prisma.Decimal(w.amount),
-      feeAmount: breakdown.escrowFee,
-      feePayer: "buyer",
-    });
-    const minCheck = await validateInvoiceMeetsNowpaymentsMinimum({
-      currency: cur,
-      network,
-      invoiceAmount: invoice.toString(),
-    });
-    if (!minCheck.ok) {
-      await ctx.answerCallbackQuery({ text: minCheck.message.slice(0, 180), show_alert: true });
-      return;
-    }
-    if (w.creatorRole === "seller") {
-      await setCreateWizard(BigInt(ctx.from.id), {
-        step: "payout_wallet",
-        creatorRole: "seller",
-        title: w.title,
-        description: w.description,
-        amount: w.amount,
-        currency: cur,
-        network,
-        partyTermsExtra: w.partyTermsExtra ?? "",
-      });
-      await ctx.answerCallbackQuery();
-      await ctx.reply(
-        [
-          `Payout wallet for <b>${cur}</b> (${network})`,
-          "",
-          "Send the wallet address where you want to receive funds on release.",
-          "Double-check the network — wrong network = lost funds.",
-        ].join("\n"),
-        { parse_mode: "HTML" },
-      );
-      return;
-    }
     await setCreateWizard(BigInt(ctx.from.id), {
-      step: "fee_payer",
+      step: "amount",
       creatorRole: w.creatorRole,
       title: w.title,
       description: w.description,
-      amount: w.amount,
       currency: cur,
       network,
       partyTermsExtra: w.partyTermsExtra ?? "",
     });
-    await ctx.answerCallbackQuery();
-    await ctx.reply("Who pays the escrow fee?", {
-      reply_markup: new InlineKeyboard()
-        .text("Buyer", "w:fee:buyer")
-        .text("Seller", "w:fee:seller")
-        .text("Split", "w:fee:split"),
-    });
+    await ctx.answerCallbackQuery({ text: `${cur} selected` });
+    await ctx.reply(amountPromptMessage(cur, network), { parse_mode: "HTML" });
   });
 
   bot.callbackQuery(/^w:pw:(yes|redo)$/, async (ctx) => {
@@ -1535,11 +1489,13 @@ export function createMainBot(): Bot<Context> {
       sellerPayoutAddress: addr,
     });
     await ctx.answerCallbackQuery({ text: "Wallet saved" });
-    await ctx.reply("Who pays the escrow fee?", {
+    await ctx.reply(feePayerPrompt(w.currency), {
+      parse_mode: "HTML",
       reply_markup: new InlineKeyboard()
-        .text("Buyer", "w:fee:buyer")
-        .text("Seller", "w:fee:seller")
-        .text("Split", "w:fee:split"),
+        .text("Buyer pays fee", "w:fee:buyer")
+        .text("Seller pays fee", "w:fee:seller")
+        .row()
+        .text("Split fee 50/50", "w:fee:split"),
     });
   });
 
@@ -1589,20 +1545,22 @@ export function createMainBot(): Bot<Context> {
     }
     await setCreateWizard(BigInt(ctx.from.id), { step: "confirm", draft });
     await ctx.answerCallbackQuery();
+    const feeLinesHtml = feeLines.map((l) => escapeTelegramHtml(l));
+    const minLineHtml = minLine ? escapeTelegramHtml(minLine) : "";
     await ctx.reply(
       [
-        "*Confirm deal*",
-        `Role: ${draft.creatorRole}`,
-        `Title: ${draft.title}`,
+        confirmDealHeader(draft.currency, draft.network),
+        `<b>Role:</b> ${escapeTelegramHtml(draft.creatorRole)}`,
+        `<b>Title:</b> ${escapeTelegramHtml(draft.title)}`,
         "",
-        ...feeLines,
-        ...(minLine ? ["", minLine] : []),
+        ...feeLinesHtml,
+        ...(minLineHtml ? ["", minLineHtml] : []),
         "",
-        `Written party terms / guarantees: ${customTerms ? "Yes (see Terms on the deal card)" : "No — standard escrow wording only"}`,
+        `<b>Custom terms:</b> ${customTerms ? "Yes" : "No — standard escrow only"}`,
       ].join("\n"),
       {
-        parse_mode: "Markdown",
-        reply_markup: new InlineKeyboard().text("✅ Create deal", "w:go").text("❌ Abort", "w:abort"),
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard().text("✅ Create deal", "w:go").text("❌ Cancel", "w:abort"),
       },
     );
   });
@@ -1792,46 +1750,82 @@ export function createMainBot(): Bot<Context> {
         return;
       }
       await setCreateWizard(BigInt(ctx.from.id), {
-        step: "amount",
+        step: "network",
         creatorRole: w.creatorRole,
         title: w.title,
         description: w.description,
         partyTermsExtra: text.slice(0, 4000),
       });
-      await ctx.reply("Enter numeric deal amount (crypto units, e.g. `100.5`):", { parse_mode: "Markdown" });
+      await ctx.reply(coinChoiceMessage(), { parse_mode: "HTML", reply_markup: coinChoiceKeyboard() });
       return;
     }
     if (w.step === "amount") {
       if (!/^\d+(\.\d+)?$/.test(text)) {
-        await ctx.reply("Invalid amount. Try again.");
+        await ctx.reply(invalidAmountMessage(w.currency), { parse_mode: "HTML" });
+        return;
+      }
+      const { getActiveFeeSettings, computeFeeBreakdown } = await import("../../services/fee.service.js");
+      const { validateInvoiceMeetsNowpaymentsMinimum } = await import("../../payments/nowpayments-min-amount.js");
+      const feeRow = await getActiveFeeSettings();
+      const breakdown = computeFeeBreakdown({
+        dealAmount: new Prisma.Decimal(text),
+        amountUsdForCaps: new Prisma.Decimal(text),
+        networkFeeEstimate: new Prisma.Decimal(0),
+        feePayer: "buyer",
+        percentage: feeRow.percentage,
+        minimumUsd: feeRow.minimumUsd,
+        maximumUsd: feeRow.maximumUsd,
+        fixedUsd: feeRow.fixedUsd,
+      });
+      const invoice = computeProcessorInvoiceAmount({
+        amount: new Prisma.Decimal(text),
+        feeAmount: breakdown.escrowFee,
+        feePayer: "buyer",
+      });
+      const minCheck = await validateInvoiceMeetsNowpaymentsMinimum({
+        currency: w.currency,
+        network: w.network,
+        invoiceAmount: invoice.toString(),
+      });
+      if (!minCheck.ok) {
+        await ctx.reply(
+          amountTooSmallMessage(w.currency, w.network, minCheck.message),
+          { parse_mode: "HTML" },
+        );
+        return;
+      }
+      if (w.creatorRole === "seller") {
+        await setCreateWizard(BigInt(ctx.from.id), {
+          step: "payout_wallet",
+          creatorRole: "seller",
+          title: w.title,
+          description: w.description,
+          amount: text,
+          currency: w.currency,
+          network: w.network,
+          partyTermsExtra: w.partyTermsExtra ?? "",
+        });
+        await ctx.reply(payoutWalletPrompt(w.currency, w.network), { parse_mode: "HTML" });
         return;
       }
       await setCreateWizard(BigInt(ctx.from.id), {
-        step: "network",
+        step: "fee_payer",
         creatorRole: w.creatorRole,
         title: w.title,
         description: w.description,
         amount: text,
+        currency: w.currency,
+        network: w.network,
         partyTermsExtra: w.partyTermsExtra ?? "",
       });
-      await ctx.reply(
-        [
-          "Choose network:",
-          "",
-          "Tip: USDT TRC20 needs about <b>$10+</b> minimum via NOWPayments. LTC often works for smaller test amounts.",
-        ].join("\n"),
-        {
-          parse_mode: "HTML",
-          reply_markup: new InlineKeyboard()
-            .text("USDT TRC20", "w:net:USDT:TRC20")
-            .text("USDT ERC20", "w:net:USDT:ERC20")
-            .row()
-            .text("BTC", "w:net:BTC:BTC")
-            .text("ETH", "w:net:ETH:ETH")
-            .row()
-            .text("LTC", "w:net:LTC:LTC"),
-        },
-      );
+      await ctx.reply(feePayerPrompt(w.currency), {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("Buyer pays fee", "w:fee:buyer")
+          .text("Seller pays fee", "w:fee:seller")
+          .row()
+          .text("Split fee 50/50", "w:fee:split"),
+      });
       return;
     }
     if (w.step === "payout_wallet" && w.creatorRole === "seller") {

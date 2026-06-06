@@ -89,7 +89,7 @@ export function formatFeeBreakdownLines(params: {
   const { currency, network, amounts: a } = params;
   const cur = currency;
   const lines = [
-    `Deal amount: ${formatCryptoAmount(a.dealAmount)} ${cur}`,
+    `Deal price: ${formatCryptoAmount(a.dealAmount)} ${cur} (in ${cur}, not dollars)`,
     `OGMP fee (1%): ${formatCryptoAmount(a.escrowFee)} ${cur} (${feePayerLabel(a.feePayer)})`,
   ];
   if (a.networkFeeEstimate.gt(0)) {

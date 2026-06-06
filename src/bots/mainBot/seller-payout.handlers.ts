@@ -37,10 +37,11 @@ export function registerSellerPayoutHandlers(bot: Bot<Context>): void {
         "━━━━━━━━━━━━━━━━━━",
         "",
         `Deal: ${deal.dealCode}`,
-        `Currency / network: ${deal.currency} (${deal.network})`,
+        `Coin: ${deal.currency} on ${deal.network}`,
+        `Deal price: ${deal.amount.toString()} ${deal.currency}`,
         "",
-        "Reply with your wallet address in one message.",
-        "Double-check network — wrong network = lost funds.",
+        `Send your ${deal.currency} wallet address (${deal.network} network).`,
+        "Wrong network = lost funds.",
       ].join("\n"),
     );
     await setSellerPayoutDraft(BigInt(ctx.from!.id), deal.dealCode, "__awaiting__");

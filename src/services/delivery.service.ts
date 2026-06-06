@@ -110,7 +110,7 @@ export function buyerPaymentRequiredText(params: {
     "",
     lockLine,
     "",
-    `Deal amount: ${params.dealAmount} ${params.currency}`,
+    `Deal price: ${params.dealAmount} ${params.currency} (in ${params.currency}, not dollars)`,
     `OGMP fee (1%): ${params.escrowFee} ${params.currency} (${params.feePayer})`,
     "",
     `Pay exactly: ${params.payAmount} ${params.currency}`,

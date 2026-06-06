@@ -105,12 +105,23 @@ export async function fetchNowpaymentsMinPaymentAmount(params: {
   }
 }
 
+function formatMinAmount(n: number): string {
+  if (n >= 1) return n.toFixed(2).replace(/\.?0+$/, "");
+  return String(Number(n.toPrecision(6)));
+}
+
+/** User-facing minimum — always in the deal coin, never dollars. */
 export function formatNowpaymentsMinimumHint(info: NowpaymentsMinAmountInfo, currency: string, network: string): string {
-  const usd = info.minUsd;
-  const parts = [`NOWPayments minimum for ${currency} (${network})`];
-  if (usd && usd > 0) parts.push(`is about $${usd.toFixed(2)} USD`);
-  else if (info.minPayAmount > 0) parts.push(`is about ${info.minPayAmount} ${currency}`);
-  return parts.join(" ");
+  if (info.minPayAmount > 0) {
+    return `Minimum payment is about ${formatMinAmount(info.minPayAmount)} ${currency} on ${network}`;
+  }
+  if (currency === "USDT" && info.minUsd && info.minUsd > 0) {
+    return `Minimum payment is about ${formatMinAmount(info.minUsd)} USDT on ${network}`;
+  }
+  if (info.minUsd && info.minUsd > 0) {
+    return `Minimum payment is about ${formatMinAmount(info.minUsd)} ${currency} on ${network}`;
+  }
+  return `Minimum payment applies for ${currency} (${network})`;
 }
 
 export type MinAmountCheckResult =
@@ -157,6 +168,6 @@ export async function validateInvoiceMeetsNowpaymentsMinimum(params: {
   return {
     ok: false,
     minInfo,
-    message: `Deal amount is below the NOWPayments minimum for this coin. ${hint}. Create a new deal with a higher amount (e.g. $10+ for USDT TRC20).`,
+    message: `Too small. ${hint}. Type a bigger amount in ${params.currency} (not dollars).`,
   };
 }

@@ -38,7 +38,7 @@ export function formatReceiptPlain(deal: {
     `Deal ID: ${deal.dealCode}`,
     `Buyer: ${b}`,
     `Seller: ${s}`,
-    `Deal amount: ${formatCryptoAmount(amounts.dealAmount)} ${deal.currency}`,
+    `Deal price: ${formatCryptoAmount(amounts.dealAmount)} ${deal.currency}`,
     `Escrow fee: ${formatCryptoAmount(amounts.escrowFee)} ${deal.currency} (${amounts.feePayer})`,
     `Buyer paid: ${formatCryptoAmount(amounts.buyerPays)} ${deal.currency}`,
     `Seller received: ${formatCryptoAmount(amounts.sellerReceives)} ${deal.currency}`,

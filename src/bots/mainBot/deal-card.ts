@@ -82,8 +82,8 @@ export function formatDealCardHtml(
     DIV,
     "",
     `<b>Status</b>  ${e(displayStatus)}${d.frozen ? " · frozen" : ""}`,
-    `<b>Amount</b>  ${e(formatCryptoAmount(payAmounts.dealAmount))} ${e(d.currency)} · ${e(d.network)}`,
-    `<b>Buyer pays</b>  ${e(formatCryptoAmount(payAmounts.buyerPays))} ${e(d.currency)}`,
+    `<b>Deal price</b>  ${e(formatCryptoAmount(payAmounts.dealAmount))} ${e(d.currency)} · ${e(d.network)}`,
+    `<b>Buyer sends</b>  ${e(formatCryptoAmount(payAmounts.buyerPays))} ${e(d.currency)}`,
     `<b>Seller gets</b>  ${e(formatCryptoAmount(payAmounts.sellerReceives))} ${e(d.currency)}`,
     `<b>Vault</b>  ${e(delivery)}`,
     `<b>Buyer</b>  ${e(buyer)}`,
@@ -110,7 +110,7 @@ export function formatDealCardHtml(
       "",
       `<b>Escrow address</b>`,
       `<code>${e(d.paymentAddress)}</code>`,
-      `<b>Send exactly</b>  ${e(formatCryptoAmount(payAmounts.buyerPays))} ${e(d.currency)}`,
+      `<b>Send exactly</b>  ${e(formatCryptoAmount(payAmounts.buyerPays))} ${e(d.currency)} (not dollars)`,
     );
   } else if (hideEscrowFromBuyer) {
     lines.push("", `<b>Pay address</b>  ${e("opens after seller locks delivery")}`);

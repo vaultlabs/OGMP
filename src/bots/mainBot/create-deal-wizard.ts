@@ -19,18 +19,19 @@ export type CreateDealWizard =
       description: string;
     }
   | {
-      step: "amount";
+      step: "network";
       creatorRole: ParticipantRole;
       title: string;
       description: string;
       partyTermsExtra?: string;
     }
   | {
-      step: "network";
+      step: "amount";
       creatorRole: ParticipantRole;
       title: string;
       description: string;
-      amount: string;
+      currency: CreateDealInput["currency"];
+      network: string;
       partyTermsExtra?: string;
     }
   | {

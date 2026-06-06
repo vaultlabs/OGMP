@@ -30,5 +30,5 @@ export function paymentAddressSetupFailedSellerMessage(dealCode: string, detail?
 }
 
 export function paymentAddressAmountTooSmallMessage(currency: string, network: string, minHint: string): string {
-  return `Amount too small for ${currency} (${network}). ${minHint}. Use a higher deal amount (often $10+ USD for USDT TRC20) and create a new deal.`;
+  return `Amount too small for ${currency} (${network}). ${minHint}. Create a new deal with a higher amount in ${currency} — not dollars.`;
 }
