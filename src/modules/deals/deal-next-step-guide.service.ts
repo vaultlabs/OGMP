@@ -33,7 +33,7 @@ export function nextStepForActorReply(
       }
       if (isBuyer) {
         const text =
-          "What: waiting on the seller to upload and lock delivery.\nSafe: you do not upload the product — only the seller does.\nNext: watch for Payment Required DM, then pay in-bot only.";
+          "What: waiting on seller to lock delivery.\nSafe: only the seller uploads files.\nNext: Payment Required DM → send the exact amount only (more/less may be lost).";
         kb.text("View deal", `d:v:${code}`);
         return { text, kb };
       }

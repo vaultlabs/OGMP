@@ -20,11 +20,12 @@ import {
   getPendingJoinInvite,
   setPendingJoinInvite,
 } from "../../modules/gateway/pending-join.service.js";
+import { GATEWAY_ACCESS_APPROVED } from "../../modules/gateway/gateway-messages.js";
 import {
-  GATEWAY_ACCESS_APPROVED,
-  GATEWAY_ACCESS_REQUIRED_LONG,
-  gatewayAccessKeyboard,
-} from "../../modules/gateway/gateway-messages.js";
+  clearGatewayPromptDedup,
+  replyGatewayAccessPrompt,
+} from "../../modules/gateway/gateway-prompt.service.js";
+import { PAYMENT_EXACT_AMOUNT_WARNING_HTML } from "./payment-copy.js";
 import {
   clearAdminGatewayExpect,
   getAdminGatewayExpect,
@@ -344,15 +345,16 @@ export function createMainBot(): Bot<Context> {
     }
 
     if (!user.termsAcceptedAt) {
-      await ctx.reply(PREMIUM_WELCOME);
+      await ctx.reply(PREMIUM_WELCOME, { parse_mode: "HTML" });
       await ctx.reply(TERMS_TEXT, {
         parse_mode: "Markdown",
-        reply_markup: new InlineKeyboard().text("I agree to the Terms", "terms:ok"),
+        reply_markup: new InlineKeyboard().text("✅ I agree to the Terms", "terms:ok"),
       });
       return;
     }
 
     await ctx.reply(PREMIUM_WELCOME, {
+      parse_mode: "HTML",
       reply_markup: mainMenuKb(isAdminTelegramId(tid)),
     });
   }
@@ -368,9 +370,7 @@ export function createMainBot(): Bot<Context> {
     if (needGw) {
       const arg = startArg(ctx);
       if (arg?.startsWith("join_")) await setPendingJoinInvite(tid, arg.slice("join_".length));
-      await ctx.reply(GATEWAY_ACCESS_REQUIRED_LONG, {
-        reply_markup: gatewayAccessKeyboard(eff.joinUrl),
-      });
+      await replyGatewayAccessPrompt(ctx, tid);
       return;
     }
 
@@ -395,28 +395,40 @@ export function createMainBot(): Bot<Context> {
     }
 
     if (u.gatewayAcceptedAt) {
-      await ctx.answerCallbackQuery({ text: "Already approved" });
-      await ctx.reply(GATEWAY_ACCESS_APPROVED);
+      await ctx.answerCallbackQuery({ text: "Already in" });
+      await replyOrEditCallbackMessage(ctx, GATEWAY_ACCESS_APPROVED, { parse_mode: "HTML" });
       const fresh = await findUserByTelegramId(tid);
       if (fresh) await processMainOnboarding(ctx, fresh);
       return;
     }
 
-    // Show gateway join UX, but do not enforce real membership (no getChatMember gate).
-    await ctx.answerCallbackQuery({ text: "Welcome" });
-
+    await ctx.answerCallbackQuery({ text: "Welcome!" });
+    await clearGatewayPromptDedup(tid);
     u = await markUserGatewayAccess({ userId: u.id, verified: false });
-    await ctx.reply(GATEWAY_ACCESS_APPROVED);
 
-    await processMainOnboarding(ctx, u);
+    const fresh = await findUserByTelegramId(tid);
+    if (!fresh?.termsAcceptedAt) {
+      await replyOrEditCallbackMessage(ctx, GATEWAY_ACCESS_APPROVED, { parse_mode: "HTML" });
+      await ctx.reply(TERMS_TEXT, {
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard().text("✅ I agree to the Terms", "terms:ok"),
+      });
+      return;
+    }
+
+    await replyOrEditCallbackMessage(ctx, `${GATEWAY_ACCESS_APPROVED}\n\n${PREMIUM_WELCOME}`, {
+      parse_mode: "HTML",
+      reply_markup: mainMenuKb(isAdmin),
+    });
   });
 
   bot.callbackQuery(/^terms:ok$/, async (ctx) => {
     if (!ctx.from) return;
     await acceptTermsForUser(BigInt(ctx.from.id));
-    await ctx.answerCallbackQuery({ text: "Terms accepted" });
-    await ctx.editMessageText("Terms accepted. You're ready to use OGMP MM.");
+    await ctx.answerCallbackQuery({ text: "Welcome!" });
+    await ctx.editMessageText("✅ Terms accepted — you're ready to use OGMP MM.");
     await ctx.reply(PREMIUM_WELCOME, {
+      parse_mode: "HTML",
       reply_markup: mainMenuKb(isAdminTelegramId(BigInt(ctx.from.id))),
     });
   });
@@ -425,6 +437,7 @@ export function createMainBot(): Bot<Context> {
     if (!ctx.from) return;
     await ctx.answerCallbackQuery();
     await replyOrEditCallbackMessage(ctx, PREMIUM_WELCOME, {
+      parse_mode: "HTML",
       reply_markup: mainMenuKb(isAdminTelegramId(BigInt(ctx.from.id))),
     });
   });
@@ -771,12 +784,14 @@ export function createMainBot(): Bot<Context> {
       });
       return;
     }
-    await ctx.answerCallbackQuery({ text: "Sending payment details…" });
+    await ctx.answerCallbackQuery({ text: "Sending…" });
     const ok = await notifyBuyerPaymentRequired(deal.id, { force: true });
-    await ctx.reply(
+    await replyOrEditCallbackMessage(
+      ctx,
       ok
-        ? "Payment Required sent above — copy the address and pay the exact amount shown."
+        ? `✅ <b>Payment details sent above</b>\n\n${PAYMENT_EXACT_AMOUNT_WARNING_HTML}`
         : "Could not send payment details yet. Try again in a minute or /support with your deal code.",
+      ok ? { parse_mode: "HTML" } : undefined,
     );
   });
 
@@ -804,7 +819,20 @@ export function createMainBot(): Bot<Context> {
     const addr = deal.paymentAddress;
     const alertText = addr.length > 180 ? `${addr.slice(0, 160)}…` : addr;
     await ctx.answerCallbackQuery({ text: alertText, show_alert: true });
-    await ctx.reply(`Escrow address (long-press to copy):\n\n${addr}`);
+    const amounts = resolveDealPaymentAmounts(deal);
+    await replyOrEditCallbackMessage(
+      ctx,
+      [
+        "<b>Escrow address</b> (long-press to copy):",
+        "",
+        `<code>${escapeTelegramHtml(addr)}</code>`,
+        "",
+        `<b>Send exactly</b> ${escapeTelegramHtml(formatCryptoAmount(amounts.buyerPays))} ${escapeTelegramHtml(deal.currency)}`,
+        "",
+        PAYMENT_EXACT_AMOUNT_WARNING_HTML,
+      ].join("\n"),
+      { parse_mode: "HTML" },
+    );
   });
 
   bot.callbackQuery(/^bx:dl:(.+)$/, async (ctx) => {

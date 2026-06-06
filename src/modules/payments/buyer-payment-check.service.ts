@@ -6,6 +6,7 @@ import {
   paymentNotDetectedBuyerText,
 } from "../../services/delivery.service.js";
 import { mockProviderPaymentWarning } from "./payment-notify.service.js";
+import { PAYMENT_EXACT_AMOUNT_WARNING } from "../../bots/mainBot/payment-copy.js";
 import { loadConfig } from "../../config/index.js";
 import { logger } from "../../utils/logger.js";
 import { markDealHotPaymentPoll } from "./hot-payment-poll.service.js";
@@ -63,9 +64,14 @@ export async function runBuyerPaymentCheck(dealId: string, requesterTelegramId: 
     const received = pay.receivedAmount?.toString() ?? "0";
     return [
       `What: payment ${pay.status}.`,
-      `Received so far: ${received} ${refreshed.currency} · Expected: ${pay.expectedAmount.toString()} on ${refreshed.network}`,
-      "Safe: vault stays locked until the full amount is confirmed.",
-      "Next: send the remainder to the same in-bot address, or contact Support with your deal code.",
+      `Received: ${received} ${refreshed.currency} · Expected: ${pay.expectedAmount.toString()} on ${refreshed.network}`,
+      "Safe: vault stays locked until the exact amount is confirmed.",
+      "",
+      PAYMENT_EXACT_AMOUNT_WARNING,
+      "",
+      pay.status === "underpaid"
+        ? "Next: send the remainder to the same address, then Check Payment."
+        : "Next: contact /support with your deal code — do not send more to the same address.",
       mockWarn ?? "",
     ]
       .filter(Boolean)

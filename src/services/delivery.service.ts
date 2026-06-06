@@ -13,6 +13,7 @@ import {
 } from "../modules/notifications/critical-notify.service.js";
 import { userFacingDealStatus } from "../modules/deals/user-facing-status.js";
 import { COMMUNITY_TRUST_LINE, TRUST_OPS_FOOTER } from "../bots/mainBot/trust-copy.js";
+import { PAYMENT_EXACT_AMOUNT_WARNING } from "../bots/mainBot/payment-copy.js";
 import { formatCryptoAmount, resolveDealPaymentAmounts } from "./fee.service.js";
 import { sellerPayoutReady } from "../modules/deals/seller-payout.service.js";
 import { getRedis } from "../utils/redis.js";
@@ -106,23 +107,23 @@ export function buyerPaymentRequiredText(params: {
     "",
     "What: pay escrow to unlock the vault.",
     "Safe: funds stay in escrow until Buyer Review + Release Request.",
-    "Next: copy the address, send exact amount on the right network, then I Have Paid / Check Payment.",
+    "Next: copy the address → send the exact amount → I Have Paid / Check Payment.",
     "",
     lockLine,
     "",
-    `Deal price: ${params.dealAmount} ${params.currency} (in ${params.currency}, not dollars)`,
+    PAYMENT_EXACT_AMOUNT_WARNING,
+    "",
+    `Deal price: ${params.dealAmount} ${params.currency}`,
     `OGMP fee (1%): ${params.escrowFee} ${params.currency} (${params.feePayer})`,
     "",
-    `Pay exactly: ${params.payAmount} ${params.currency}`,
+    `▶ Pay exactly: ${params.payAmount} ${params.currency}`,
     `Seller receives on release: ${params.sellerReceives} ${params.currency}`,
     `Network: ${params.network}`,
     "",
-    "Address:",
+    "Escrow address (long-press to copy):",
     params.paymentAddress,
     "",
     `Expires: ${exp}`,
-    "",
-    "Send only the selected crypto on this network. Never pay outside OGMP MM.",
     "",
     TRUST_OPS_FOOTER,
     "",
@@ -492,12 +493,12 @@ export function paymentNotDetectedBuyerText(details?: {
 }): string {
   const lines = [
     "What: payment not detected yet.",
-    "Safe: nothing is released; your wallet is unchanged by OGMP MM.",
-    "Next: double-check amount, network, and address — then Check Payment again.",
+    "Safe: nothing is released.",
+    "Next: Check Payment again after a few minutes.",
     "",
-    "Only the buyer pays escrow. Use the exact address from Payment Required / View deal.",
+    PAYMENT_EXACT_AMOUNT_WARNING,
     "",
-    "Never pay outside OGMP MM.",
+    "Use the address from Payment Required or View deal only.",
   ];
   if (details) {
     lines.splice(

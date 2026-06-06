@@ -6,6 +6,7 @@ import {
 } from "../notifications/critical-notify.service.js";
 import { loadConfig } from "../../config/index.js";
 import { formatCryptoAmount, resolveDealPaymentAmounts } from "../../services/fee.service.js";
+import { PAYMENT_EXACT_AMOUNT_WARNING } from "../../bots/mainBot/payment-copy.js";
 
 const DETECTED_NOTIFY_KEY = (dealId: string) => `ogmp:pay-notified:detected:${dealId}`;
 const CONFIRMED_NOTIFY_KEY = (dealId: string) => `ogmp:pay-notified:confirmed:${dealId}`;
@@ -128,8 +129,13 @@ export async function notifyBuyerPaymentPartialIfNeeded(dealId: string): Promise
     "",
     `What: payment ${kind}.`,
     `Received: ${received} ${deal.currency} · Pay exactly: ${expected} on ${deal.network}`,
-    "Safe: escrow will not unlock until this is resolved.",
-    "Next: send the remaining amount to the same in-bot address, or open Support with your deal code.",
+    "Safe: vault stays locked until the exact amount is confirmed.",
+    "",
+    PAYMENT_EXACT_AMOUNT_WARNING,
+    "",
+    kind === "underpaid"
+      ? "Next: send the remainder to the same address, then Check Payment."
+      : "Next: /support with your deal code — do not send more to the same address.",
     "",
     `Deal: ${deal.dealCode}`,
   ].join("\n");

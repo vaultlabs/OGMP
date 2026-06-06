@@ -5,6 +5,7 @@ import { sellerPayoutReady } from "../../modules/deals/seller-payout.service.js"
 import { formatCryptoAmount, resolveDealPaymentAmounts } from "../../services/fee.service.js";
 import { maskPayoutAddress } from "../../services/payout.service.js";
 import { escapeTelegramHtml } from "../../utils/telegram-html.js";
+import { PAYMENT_EXACT_AMOUNT_WARNING_HTML } from "./payment-copy.js";
 
 const DIV = "━━━━━━━━━━━━━━━━━━";
 
@@ -110,7 +111,9 @@ export function formatDealCardHtml(
       "",
       `<b>Escrow address</b>`,
       `<code>${e(d.paymentAddress)}</code>`,
-      `<b>Send exactly</b>  ${e(formatCryptoAmount(payAmounts.buyerPays))} ${e(d.currency)} (not dollars)`,
+      `<b>Send exactly</b>  ${e(formatCryptoAmount(payAmounts.buyerPays))} ${e(d.currency)}`,
+      "",
+      PAYMENT_EXACT_AMOUNT_WARNING_HTML,
     );
   } else if (hideEscrowFromBuyer) {
     lines.push("", `<b>Pay address</b>  ${e("opens after seller locks delivery")}`);
@@ -139,7 +142,7 @@ function dealNextStepLine(
       return "Buyer can pay — tap Submit Delivery if they need a reminder.";
     }
     if (cardCtx.isBuyer) {
-      if (cardCtx.buyerCanPay) return "Send exact amount → I Have Paid → Check Payment.";
+      if (cardCtx.buyerCanPay) return "Send the exact amount only (more/less may be lost) → I Have Paid → Check Payment.";
       if (cardCtx.sellerLockedCount > 0) return "Waiting on seller wallet / pay address.";
       return "Waiting for seller to lock delivery.";
     }
