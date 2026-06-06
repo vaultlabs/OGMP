@@ -66,7 +66,7 @@ export function formatInsufficientBalanceHelp(params: {
     "2. Check balance for the same coin/network as the deal (e.g. USDT TRC20 → usdttrc20).",
     "3. Buyer payments may sit in Payments until you convert / move to Custody.",
     "4. Settings → Payments → Payment Details → set Withdrawal fee paid by → Receiver (sender-paid fees need extra balance).",
-    "5. If you have funds in another coin, use Mass Payouts in the dashboard to convert (API auto-convert is not available).",
+    "5. If you have funds in another coin, OGMP auto-converts via API when NOWPAYMENTS_AUTO_CUSTODY_CONVERT=true (needs enough USDC/etc. in Custody).",
     "",
     "After topping up Custody in the right coin, run /admin_retry_payout again.",
   ];

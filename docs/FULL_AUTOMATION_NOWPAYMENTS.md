@@ -192,15 +192,32 @@ You only use `/admin_retry_payout` if something failed (balance, old whitelist, 
 
 ---
 
+## If your NOWPayments account auto-converts deposits to USDC
+
+Some accounts route **all** incoming payments into **USDC** in Custody. Multi-coin deals still pay sellers in **the deal coin** (e.g. USDT ERC20 → `usdterc20`).
+
+OGMP handles this when `NOWPAYMENTS_AUTO_CUSTODY_CONVERT=true` (default): before payout it swaps USDC → the deal coin via **POST /v1/conversion**.
+
+**You still need:**
+
+1. Enough **total value** in Custody (USDC float is fine — e.g. keep **$50–100 USDC** minimum).
+2. **Custody conversions enabled** on your NOWPayments account (JWT + API). If auto-convert fails in logs, email **whitelist@nowpayments.io** and ask that **API custody conversions** are enabled for your account.
+3. After a failed payout, `/admin_retry_payout DEALCODE` once float/conversion is fixed.
+
+**Simplest ops (one coin):** Only create **USDT TRC20** deals until multi-coin float is stable.
+
+---
+
 ## Checklist — “fully automated”
 
 - [ ] Email sent to **whitelist@nowpayments.io** (wallet + IP whitelist off) — **or** you accept manual wallet approval per seller
-- [ ] Custody enabled, correct coin funded, fee payer = Receiver
+- [ ] Custody enabled, **$50+ USDC** (or deal-coin) float, fee payer = Receiver
+- [ ] `NOWPAYMENTS_AUTO_CUSTODY_CONVERT=true` (default)
 - [ ] `NOWPAYMENTS_2FA_SECRET` = 15 chars, bot restarted
 - [ ] `NOWPAYMENTS_PAYOUT_VERIFY_CODE` empty
 - [ ] `AUTO_RELEASE_ENABLED=true`
 - [ ] `PUBLIC_BASE_URL` HTTPS + IPN URLs set
-- [ ] Server IP whitelisted **or** IP whitelist disabled by NOWPayments
+- [ ] **VPS with static IP** (not Codespaces) — IP whitelisted **or** IP whitelist disabled by NOWPayments
 - [ ] Test deal: release → seller paid without you opening NOWPayments
 
 More: [AUTOMATION.md](./AUTOMATION.md), [ENV_SETUP.md](./ENV_SETUP.md), [SETUP_CODESPACES.md](./SETUP_CODESPACES.md).

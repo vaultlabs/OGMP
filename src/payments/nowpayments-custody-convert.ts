@@ -128,11 +128,16 @@ async function createConversion(
     throw new Error(`NOWPayments conversion failed (${res.status}): ${msg}`);
   }
   const id =
+    (typeof data.deposit_id === "string" && data.deposit_id) ||
+    (typeof data.deposit_id === "number" && String(data.deposit_id)) ||
     (typeof data.id === "string" && data.id) ||
     (typeof data.id === "number" && String(data.id)) ||
     (typeof data.conversion_id === "string" && data.conversion_id) ||
     (typeof data.conversion_id === "number" && String(data.conversion_id));
-  if (!id) throw new Error("NOWPayments conversion response missing id");
+  if (!id) {
+    logger.warn("custody_convert_bad_response", { status: res.status, body: text.slice(0, 400) });
+    throw new Error("NOWPayments conversion response missing id/deposit_id");
+  }
   return id;
 }
 
