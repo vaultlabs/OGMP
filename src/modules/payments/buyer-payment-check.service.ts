@@ -1,5 +1,5 @@
 import { prisma } from "../../db/prisma.js";
-import { applyPaymentSyncForDeal } from "./payment.service.js";
+import { applyPaymentSyncForDeal, isPaymentSyncRaceError } from "./payment.service.js";
 import {
   paymentConfirmedUnlockingText,
   paymentDetectedWaitingText,
@@ -32,17 +32,20 @@ export async function runBuyerPaymentCheck(dealId: string, requesterTelegramId: 
   await markDealHotPaymentPoll(dealId);
   try {
     await applyPaymentSyncForDeal(dealId);
-    await applyPaymentSyncForDeal(dealId);
   } catch (e) {
-    logger.error("buyer_payment_check_sync_failed", { dealId, err: String(e) });
-    const provider = loadConfig().PAYMENT_PROVIDER;
-    return [
-      "What: could not reach the payment processor right now.",
-      "Safe: nothing was released.",
-      `Next: wait 1–2 minutes and tap Check Payment again. (Provider: ${provider})`,
-      "",
-      "If this keeps happening, check PUBLIC_BASE_URL / NOWPayments API keys and that the bot process is online.",
-    ].join("\n");
+    if (isPaymentSyncRaceError(e)) {
+      logger.warn("buyer_payment_check_race", { dealId });
+    } else {
+      logger.error("buyer_payment_check_sync_failed", { dealId, err: String(e) });
+      const provider = loadConfig().PAYMENT_PROVIDER;
+      return [
+        "What: could not reach the payment processor right now.",
+        "Safe: nothing was released.",
+        `Next: wait 1–2 minutes and tap Check Payment again. (Provider: ${provider})`,
+        "",
+        "If this keeps happening, check PUBLIC_BASE_URL / NOWPayments API keys and that the bot process is online.",
+      ].join("\n");
+    }
   }
   const refreshed = await prisma.deal.findUnique({
     where: { id: dealId },

@@ -18,9 +18,19 @@ import {
   shouldAdvancePaymentStatus,
 } from "./payment-status-rank.js";
 import { unmarkDealHotPaymentPoll } from "./hot-payment-poll.service.js";
+import { ConflictError } from "../../utils/errors.js";
 
 export function isPrismaUniqueConstraintError(e: unknown): boolean {
   return typeof e === "object" && e !== null && "code" in e && (e as { code: string }).code === "P2002";
+}
+
+/** P2025 — optimistic lock miss or row deleted between read and update. */
+export function isPrismaRecordNotFoundError(e: unknown): boolean {
+  return typeof e === "object" && e !== null && "code" in e && (e as { code: string }).code === "P2025";
+}
+
+export function isPaymentSyncRaceError(e: unknown): boolean {
+  return e instanceof ConflictError || isPrismaRecordNotFoundError(e);
 }
 
 function mapProviderStatus(
@@ -52,6 +62,26 @@ async function loadDeal(dealId: string) {
   return prisma.deal.findUnique({ where: { id: dealId } });
 }
 
+async function safeTransition(
+  dealId: string,
+  from: Parameters<typeof transitionDealStatus>[1],
+  to: Parameters<typeof transitionDealStatus>[2],
+  extra?: Parameters<typeof transitionDealStatus>[3],
+): Promise<boolean> {
+  const deal = await loadDeal(dealId);
+  if (!deal || deal.status !== from) return false;
+  try {
+    await transitionDealStatus(deal.id, from, to, extra);
+    return true;
+  } catch (e) {
+    if (isPaymentSyncRaceError(e)) {
+      logger.warn("payment_transition_race", { dealId, from, to });
+      return false;
+    }
+    throw e;
+  }
+}
+
 async function promoteDealToFunded(
   dealId: string,
   txHash: string | undefined,
@@ -60,12 +90,14 @@ async function promoteDealToFunded(
   if (!deal) return false;
 
   if (deal.status === "waiting_payment") {
-    await transitionDealStatus(deal.id, "waiting_payment", "payment_detected");
-    await appendDealTimelineEvent({
-      dealId: deal.id,
-      eventType: "payment_detected",
-      metadata: { phase: "confirmed" },
-    });
+    const moved = await safeTransition(dealId, "waiting_payment", "payment_detected");
+    if (moved) {
+      await appendDealTimelineEvent({
+        dealId: deal.id,
+        eventType: "payment_detected",
+        metadata: { phase: "confirmed" },
+      });
+    }
     deal = await loadDeal(dealId);
     if (!deal) return false;
   }
@@ -74,10 +106,14 @@ async function promoteDealToFunded(
     return deal.status === "funded";
   }
 
-  await transitionDealStatus(deal.id, "payment_detected", "funded", {
+  const funded = await safeTransition(dealId, "payment_detected", "funded", {
     fundedAt: new Date(),
     txHash: txHash ?? deal.txHash ?? undefined,
   });
+  if (!funded) {
+    deal = await loadDeal(dealId);
+    return deal?.status === "funded";
+  }
   await appendDealTimelineEvent({
     dealId: deal.id,
     eventType: "payment_confirmed",
@@ -112,21 +148,27 @@ export async function applyPaymentStatusToDeal(
   }
 
   if (status.status === "expired" || status.status === "failed") {
-    if (deal.status === "waiting_payment" || deal.status === "payment_detected") {
-      assertValidDealTransition(deal.status, "cancelled");
-      await prisma.deal.update({
-        where: { id: deal.id, version: deal.version },
-        data: { status: "cancelled", cancelledAt: new Date(), version: { increment: 1 } },
-      });
-      await writeAuditLog({
-        eventType: status.status === "expired" ? "payment_expired" : "payment_failed",
-        dealId,
-      });
-      await appendDealTimelineEvent({
-        dealId,
-        eventType: "deal_closed",
-        metadata: { reason: status.status === "expired" ? "payment_expired" : "payment_failed" },
-      });
+    deal = await loadDeal(dealId);
+    if (deal && (deal.status === "waiting_payment" || deal.status === "payment_detected")) {
+      try {
+        assertValidDealTransition(deal.status, "cancelled");
+        await transitionDealStatus(deal.id, deal.status, "cancelled", { cancelledAt: new Date() });
+        await writeAuditLog({
+          eventType: status.status === "expired" ? "payment_expired" : "payment_failed",
+          dealId,
+        });
+        await appendDealTimelineEvent({
+          dealId,
+          eventType: "deal_closed",
+          metadata: { reason: status.status === "expired" ? "payment_expired" : "payment_failed" },
+        });
+      } catch (e) {
+        if (isPaymentSyncRaceError(e)) {
+          logger.warn("payment_cancel_race", { dealId, err: String(e) });
+          return;
+        }
+        throw e;
+      }
     }
     await unmarkDealHotPaymentPoll(dealId);
     return;
@@ -134,12 +176,14 @@ export async function applyPaymentStatusToDeal(
 
   if (status.status === "underpaid" || status.status === "overpaid") {
     if (deal.status === "waiting_payment") {
-      await transitionDealStatus(deal.id, "waiting_payment", "payment_detected");
-      await appendDealTimelineEvent({
-        dealId: deal.id,
-        eventType: "payment_detected",
-        metadata: { phase: status.status, received: status.receivedAmount },
-      });
+      const moved = await safeTransition(dealId, "waiting_payment", "payment_detected");
+      if (moved) {
+        await appendDealTimelineEvent({
+          dealId: deal.id,
+          eventType: "payment_detected",
+          metadata: { phase: status.status, received: status.receivedAmount },
+        });
+      }
     }
     await writeAuditLog({
       eventType: status.status === "underpaid" ? "payment_underpaid" : "payment_overpaid",
@@ -160,12 +204,14 @@ export async function applyPaymentStatusToDeal(
     deal = await loadDeal(dealId);
     if (!deal) return;
     if (deal.status === "waiting_payment") {
-      await transitionDealStatus(deal.id, "waiting_payment", "payment_detected");
-      await appendDealTimelineEvent({
-        dealId: deal.id,
-        eventType: "payment_detected",
-        metadata: { phase: status.status, confirmations: status.confirmations },
-      });
+      const moved = await safeTransition(dealId, "waiting_payment", "payment_detected");
+      if (moved) {
+        await appendDealTimelineEvent({
+          dealId: deal.id,
+          eventType: "payment_detected",
+          metadata: { phase: status.status, confirmations: status.confirmations },
+        });
+      }
     }
     await writeAuditLog({
       eventType: "payment_detected",

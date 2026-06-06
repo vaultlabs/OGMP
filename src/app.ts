@@ -8,6 +8,7 @@ import { createReportBot } from "./bots/reportBot/report-bot.js";
 import { startHttpServer } from "./server/http.js";
 import { runPaymentWatcherOnce } from "./jobs/paymentWatcher.job.js";
 import { runHotPaymentWatcherOnce } from "./jobs/hotPaymentWatcher.job.js";
+import { pruneStaleHotPaymentDeals } from "./modules/payments/hot-payment-poll.service.js";
 import { runExpiryWatcherOnce } from "./jobs/expiryWatcher.job.js";
 import { logger } from "./utils/logger.js";
 import { startNotificationWorker, stopNotificationWorker } from "./workers/notification.worker.js";
@@ -35,6 +36,12 @@ export async function startApp(): Promise<void> {
   }
 
   startNotificationWorker();
+
+  void pruneStaleHotPaymentDeals()
+    .then((n) => {
+      if (n > 0) logger.info("hot_payment_poll_pruned", { count: n });
+    })
+    .catch((e) => logger.warn("hot_payment_poll_prune_failed", { err: String(e) }));
 
   const paymentTimer = setInterval(() => {
     void runPaymentWatcherOnce().catch((e) => logger.error("payment_watcher", { err: String(e) }));

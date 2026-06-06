@@ -1,4 +1,4 @@
-import { applyPaymentSyncForDeal } from "../modules/payments/payment.service.js";
+import { applyPaymentSyncForDeal, isPaymentSyncRaceError } from "../modules/payments/payment.service.js";
 import {
   listHotPaymentDealIds,
   unmarkDealHotPaymentPoll,
@@ -26,6 +26,10 @@ export async function runHotPaymentWatcherOnce(): Promise<void> {
       }
       await applyPaymentSyncForDeal(dealId);
     } catch (e) {
+      if (isPaymentSyncRaceError(e)) {
+        logger.warn("hot_payment_watcher_deal_race", { dealId });
+        continue;
+      }
       logger.error("hot_payment_watcher_deal_failed", { dealId, err: String(e) });
     }
   }
