@@ -8,8 +8,12 @@ describe("extractJoinTokenFromText", () => {
     ).toBe("abc123XYZ-_");
   });
 
-  it("parses raw token", () => {
-    expect(extractJoinTokenFromText("YWJjMTIzZWZnaGlqa2xtbm9w")).toBe("YWJjMTIzZWZnaGlqa2xtbm9w");
+  it("parses explicit join paste", () => {
+    expect(extractJoinTokenFromText("join YWJjMTIzZWZnaGlqa2xtbm9w")).toBe("YWJjMTIzZWZnaGlqa2xtbm9w");
+  });
+
+  it("ignores wallet addresses", () => {
+    expect(extractJoinTokenFromText("LMsMHCC1DEKYQX8JNmy5pRvaqnFijmgXVA")).toBeNull();
   });
 
   it("ignores normal chat", () => {
