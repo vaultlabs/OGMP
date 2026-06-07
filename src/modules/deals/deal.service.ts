@@ -8,6 +8,7 @@ import {
   computeProcessorInvoiceAmount,
   getActiveFeeSettings,
   quoteDealPaymentTotals,
+  resolveDealPaymentAmounts,
   resolveDealPaymentAmountsPreProcessor,
 } from "../../services/fee.service.js";
 import { assertValidDealTransition } from "../../services/escrow-state-machine.js";
@@ -323,6 +324,7 @@ export async function ensurePaymentInstruction(dealId: string): Promise<Deal> {
 
   const provider = getPaymentProvider();
   const prelim = resolveDealPaymentAmountsPreProcessor(deal);
+  const estimatedBefore = resolveDealPaymentAmounts(deal).buyerPays;
   const invoice = computeProcessorInvoiceAmount(deal);
   const addr = await provider.createPaymentAddress(
     deal,
@@ -393,8 +395,9 @@ export async function ensurePaymentInstruction(dealId: string): Promise<Deal> {
   const { countLockedDeliveryMessages } = await import("../dealMessages/dealMessage.service.js");
   const locked = await countLockedDeliveryMessages(dealId);
   if (locked > 0) {
+    const amountChanged = buyerPays.sub(estimatedBefore).abs().gt(new PrismaNs.Decimal("0.000001"));
     const { notifyBuyerPaymentRequired } = await import("../../services/delivery.service.js");
-    void notifyBuyerPaymentRequired(dealId).catch((e) =>
+    void notifyBuyerPaymentRequired(dealId, { force: amountChanged }).catch((e) =>
       logger.warn("notify_buyer_payment_after_address", { dealId, err: String(e) }),
     );
   }

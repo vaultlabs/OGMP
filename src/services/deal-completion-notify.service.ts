@@ -3,7 +3,12 @@ import { prisma } from "../db/prisma.js";
 import { COMMUNITY_TRUST_LINE, TRUST_OPS_FOOTER } from "../bots/mainBot/trust-copy.js";
 import { enqueueDealParticipantNotify } from "../modules/notifications/notificationQueue.service.js";
 import { logger } from "../utils/logger.js";
-import { formatCryptoAmount, resolveDealPaymentAmounts } from "./fee.service.js";
+import {
+  formatCryptoAmount,
+  previewSellerPayoutAmount,
+  resolveBuyerPayAmount,
+  resolveDealPaymentAmounts,
+} from "./fee.service.js";
 import type { FeePayer } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 
@@ -20,6 +25,9 @@ export function formatReceiptPlain(deal: {
   status: string;
   releasedAt: Date | null;
   txHash: string | null;
+}, opts?: {
+  buyerPaid?: Prisma.Decimal;
+  sellerReceived?: Prisma.Decimal;
 }): string {
   const b =
     deal.buyer?.username != null && deal.buyer.username !== ""
@@ -30,6 +38,8 @@ export function formatReceiptPlain(deal: {
       ? `@${deal.seller.username}`
       : deal.seller?.firstName ?? "Seller";
   const amounts = resolveDealPaymentAmounts(deal);
+  const buyerPaid = opts?.buyerPaid ?? amounts.buyerPays;
+  const sellerReceived = opts?.sellerReceived ?? amounts.sellerReceives;
   return [
     "━━━━━━━━━━━━━━━━━━",
     "OGMP MM — Deal Receipt",
@@ -40,8 +50,8 @@ export function formatReceiptPlain(deal: {
     `Seller: ${s}`,
     `Deal price: ${formatCryptoAmount(amounts.dealAmount)} ${deal.currency}`,
     `Escrow fee: ${formatCryptoAmount(amounts.escrowFee)} ${deal.currency} (${amounts.feePayer})`,
-    `Buyer paid: ${formatCryptoAmount(amounts.buyerPays)} ${deal.currency}`,
-    `Seller received: ${formatCryptoAmount(amounts.sellerReceives)} ${deal.currency}`,
+    `Buyer paid: ${formatCryptoAmount(buyerPaid)} ${deal.currency}`,
+    `Seller received: ${formatCryptoAmount(sellerReceived)} ${deal.currency}`,
     `Network: ${deal.network}`,
     `Status: ${deal.status === "released" ? "Completed" : deal.status}`,
     `Completed at: ${deal.releasedAt?.toISOString().slice(0, 19) ?? "—"}Z`,
@@ -73,7 +83,15 @@ export async function onDealReleasedSideEffects(dealId: string): Promise<void> {
       return;
     }
 
-    const receiptBody = formatReceiptPlain(deal);
+    const [payment, payout] = await Promise.all([
+      prisma.payment.findFirst({ where: { dealId }, orderBy: { createdAt: "desc" } }),
+      prisma.payout.findFirst({ where: { dealId, status: { not: "failed" } }, orderBy: { createdAt: "desc" } }),
+    ]);
+    const sellerPreview = previewSellerPayoutAmount(deal, payment);
+    const receiptBody = formatReceiptPlain(deal, {
+      buyerPaid: payment ? resolveBuyerPayAmount(deal, payment) : undefined,
+      sellerReceived: payout?.amount ?? sellerPreview.payout,
+    });
     const payload = {
       dealCode: deal.dealCode,
       buyerId: deal.buyerId,

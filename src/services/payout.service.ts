@@ -147,7 +147,7 @@ export async function executeDealPayoutAfterRelease(dealId: string): Promise<Dea
 
     const provider = getPaymentProvider();
     if (provider.name === "nowpayments" && !isAutoPayoutConfigured()) {
-      await notifySellerPayoutQueued(deal.dealCode, deal.sellerPayoutAddress, amounts.sellerReceives, deal.currency);
+      await notifySellerPayoutQueued(deal.dealCode, deal.sellerPayoutAddress, payoutAmount, deal.currency);
       await notifyAdminsPayoutSetupNeeded(deal.dealCode, "missing_nowpayments_email_password");
       return { ok: false, error: "NOWPayments payout auth not configured (email/password in .env)." };
     }

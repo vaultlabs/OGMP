@@ -3,6 +3,7 @@ import type { FeePayer } from "@prisma/client";
 import { prisma } from "../db/prisma.js";
 import { loadConfig } from "../config/index.js";
 import { fetchNowpaymentsPayQuote } from "../payments/nowpayments-quote.js";
+import { computeEscrowPayoutAmount } from "../payments/payout-amount.js";
 
 const Decimal = Prisma.Decimal;
 
@@ -80,28 +81,81 @@ export function resolveDealPaymentAmounts(deal: {
   };
 }
 
+/** Buyer send amount — `payment.expectedAmount` (NOWPayments pay_amount) when escrow address exists. */
+export function resolveBuyerPayAmount(
+  deal: {
+    amount: Prisma.Decimal;
+    feeAmount: Prisma.Decimal;
+    feePayer: FeePayer;
+    networkFeeEstimate: Prisma.Decimal;
+  },
+  payment?: { expectedAmount: Prisma.Decimal } | null,
+): Prisma.Decimal {
+  if (payment?.expectedAmount?.gt(0)) {
+    return payment.expectedAmount;
+  }
+  return resolveDealPaymentAmounts(deal).buyerPays;
+}
+
+/** Seller payout preview — caps to on-chain received when lower than quoted sellerReceives. */
+export function previewSellerPayoutAmount(
+  deal: {
+    amount: Prisma.Decimal;
+    feeAmount: Prisma.Decimal;
+    feePayer: FeePayer;
+    networkFeeEstimate: Prisma.Decimal;
+  },
+  payment?: { receivedAmount?: Prisma.Decimal | null } | null,
+): { quoted: Prisma.Decimal; payout: Prisma.Decimal; capped: boolean } {
+  const amounts = resolveDealPaymentAmounts(deal);
+  const payout = computeEscrowPayoutAmount({
+    sellerReceives: amounts.sellerReceives,
+    receivedAmount: payment?.receivedAmount ?? null,
+    custodyAvailable: null,
+  });
+  return { quoted: amounts.sellerReceives, payout, capped: payout.lt(amounts.sellerReceives) };
+}
+
 /** Plain-language fee lines for deal card, payment DM, and wizard confirm. */
 export function formatFeeBreakdownLines(params: {
   currency: string;
   network: string;
   amounts: DealPaymentAmounts;
+  /** When true, buyer total is final (from NOWPayments pay_amount). */
+  paymentAddressReady?: boolean;
+  authoritativeBuyerPay?: Prisma.Decimal | null;
+  sellerPayoutPreview?: Prisma.Decimal | null;
 }): string[] {
   const { currency, network, amounts: a } = params;
   const cur = currency;
+  const buyerPay =
+    params.paymentAddressReady && params.authoritativeBuyerPay?.gt(0)
+      ? params.authoritativeBuyerPay
+      : a.buyerPays;
+  const sellerLine =
+    params.sellerPayoutPreview && params.sellerPayoutPreview.lt(a.sellerReceives)
+      ? `Seller receives on release: ${formatCryptoAmount(params.sellerPayoutPreview)} ${cur} (net after processor)`
+      : `Seller receives on release: ${formatCryptoAmount(a.sellerReceives)} ${cur}`;
   const lines = [
     `Deal price: ${formatCryptoAmount(a.dealAmount)} ${cur} (in ${cur}, not dollars)`,
     `OGMP fee (1%): ${formatCryptoAmount(a.escrowFee)} ${cur} (${feePayerLabel(a.feePayer)})`,
   ];
   if (a.networkFeeEstimate.gt(0)) {
-    lines.push(`NOWPayments fee (est.): ${formatCryptoAmount(a.networkFeeEstimate)} ${cur}`);
+    lines.push(
+      params.paymentAddressReady
+        ? `NOWPayments fee: ${formatCryptoAmount(a.networkFeeEstimate)} ${cur}`
+        : `NOWPayments fee (est.): ${formatCryptoAmount(a.networkFeeEstimate)} ${cur}`,
+    );
   } else {
     lines.push("NOWPayments fee: added when payment opens (from live quote)");
   }
   lines.push(
     `Network: ${network}`,
     "",
-    `Pay exactly: ${formatCryptoAmount(a.buyerPays)} ${cur}`,
-    `Seller receives on release: ${formatCryptoAmount(a.sellerReceives)} ${cur}`,
+    params.paymentAddressReady
+      ? `Pay exactly: ${formatCryptoAmount(buyerPay)} ${cur}`
+      : `Estimated total: ${formatCryptoAmount(buyerPay)} ${cur} (final amount locks when payment opens)`,
+    sellerLine,
   );
   if (a.feePayer === "buyer") {
     lines.push("", "Fee is added on top — seller gets the full deal amount after release.");

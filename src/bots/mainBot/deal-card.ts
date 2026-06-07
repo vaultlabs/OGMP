@@ -1,8 +1,13 @@
-import type { Deal, PaymentRecordStatus } from "@prisma/client";
+import type { Deal, PaymentRecordStatus, Prisma } from "@prisma/client";
 import { prisma } from "../../db/prisma.js";
 import { userFacingDealStatus, userFacingDeliveryState } from "../../modules/deals/user-facing-status.js";
 import { sellerPayoutReady } from "../../modules/deals/seller-payout.service.js";
-import { formatCryptoAmount, resolveDealPaymentAmounts } from "../../services/fee.service.js";
+import {
+  formatCryptoAmount,
+  previewSellerPayoutAmount,
+  resolveBuyerPayAmount,
+  resolveDealPaymentAmounts,
+} from "../../services/fee.service.js";
 import { maskPayoutAddress } from "../../services/payout.service.js";
 import { escapeTelegramHtml } from "../../utils/telegram-html.js";
 import { PAYMENT_EXACT_AMOUNT_WARNING_HTML } from "./payment-copy.js";
@@ -12,6 +17,8 @@ const DIV = "━━━━━━━━━━━━━━━━━━";
 export type DealCardContext = {
   sellerLockedCount: number;
   paymentStatus: PaymentRecordStatus | null;
+  paymentExpectedAmount: Prisma.Decimal | null;
+  paymentReceivedAmount: Prisma.Decimal | null;
   isBuyer: boolean;
   isSeller: boolean;
   buyerCanPay: boolean;
@@ -39,6 +46,8 @@ export async function loadDealCardContext(dealId: string, viewerUserId: string |
     ctx: {
       sellerLockedCount,
       paymentStatus: pay?.status ?? null,
+      paymentExpectedAmount: pay?.expectedAmount ?? null,
+      paymentReceivedAmount: pay?.receivedAmount ?? null,
       isBuyer: !!viewerUserId && deal.buyerId === viewerUserId,
       isSeller: !!viewerUserId && deal.sellerId === viewerUserId,
       buyerCanPay,
@@ -72,6 +81,15 @@ export function formatDealCardHtml(
   });
   const delivery = userFacingDeliveryState(d.status, cardCtx.sellerLockedCount > 0);
   const payAmounts = resolveDealPaymentAmounts(d);
+  const paymentRef =
+    cardCtx.paymentExpectedAmount || cardCtx.paymentReceivedAmount
+      ? {
+          expectedAmount: cardCtx.paymentExpectedAmount ?? payAmounts.buyerPays,
+          receivedAmount: cardCtx.paymentReceivedAmount,
+        }
+      : null;
+  const buyerPays = resolveBuyerPayAmount(d, paymentRef);
+  const sellerPreview = previewSellerPayoutAmount(d, paymentRef);
   const hideEscrowFromBuyer =
     cardCtx.isBuyer &&
     (d.status === "waiting_payment" || d.status === "payment_detected") &&
@@ -84,8 +102,8 @@ export function formatDealCardHtml(
     "",
     `<b>Status</b>  ${e(displayStatus)}${d.frozen ? " · frozen" : ""}`,
     `<b>Deal price</b>  ${e(formatCryptoAmount(payAmounts.dealAmount))} ${e(d.currency)} · ${e(d.network)}`,
-    `<b>Buyer sends</b>  ${e(formatCryptoAmount(payAmounts.buyerPays))} ${e(d.currency)}`,
-    `<b>Seller gets</b>  ${e(formatCryptoAmount(payAmounts.sellerReceives))} ${e(d.currency)}`,
+    `<b>${d.paymentAddress ? "Buyer sends" : "Est. buyer sends"}</b>  ${e(formatCryptoAmount(buyerPays))} ${e(d.currency)}`,
+    `<b>Seller gets</b>  ${e(formatCryptoAmount(sellerPreview.payout))} ${e(d.currency)}${sellerPreview.capped ? " (net)" : ""}`,
     `<b>Vault</b>  ${e(delivery)}`,
     `<b>Buyer</b>  ${e(buyer)}`,
     `<b>Seller</b>  ${e(seller)}`,
@@ -111,7 +129,7 @@ export function formatDealCardHtml(
       "",
       `<b>Escrow address</b>`,
       `<code>${e(d.paymentAddress)}</code>`,
-      `<b>Send exactly</b>  ${e(formatCryptoAmount(payAmounts.buyerPays))} ${e(d.currency)}`,
+      `<b>Send exactly</b>  ${e(formatCryptoAmount(buyerPays))} ${e(d.currency)}`,
       "",
       PAYMENT_EXACT_AMOUNT_WARNING_HTML,
     );

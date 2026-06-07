@@ -5,7 +5,11 @@ import {
   notifyDmWithButtonsCritical,
 } from "../notifications/critical-notify.service.js";
 import { loadConfig } from "../../config/index.js";
-import { formatCryptoAmount, resolveDealPaymentAmounts } from "../../services/fee.service.js";
+import {
+  formatCryptoAmount,
+  previewSellerPayoutAmount,
+  resolveBuyerPayAmount,
+} from "../../services/fee.service.js";
 import { PAYMENT_EXACT_AMOUNT_WARNING } from "../../bots/mainBot/payment-copy.js";
 
 const DETECTED_NOTIFY_KEY = (dealId: string) => `ogmp:pay-notified:detected:${dealId}`;
@@ -69,8 +73,8 @@ export async function notifyBuyerPaymentDetectedIfNeeded(dealId: string): Promis
   if (!deal?.buyer || !pay) return;
 
   const received = pay.receivedAmount?.toString() ?? "0";
-  const amounts = resolveDealPaymentAmounts(deal);
-  const expected = formatCryptoAmount(amounts.buyerPays);
+  const expected = formatCryptoAmount(resolveBuyerPayAmount(deal, pay));
+  const sellerPreview = previewSellerPayoutAmount(deal, pay);
   const text = [
     "━━━━━━━━━━━━━━━━━━",
     "OGMP MM — Payment received",
@@ -78,7 +82,7 @@ export async function notifyBuyerPaymentDetectedIfNeeded(dealId: string): Promis
     "",
     "What: we see your payment on-chain.",
     `Amount seen: ${received} ${deal.currency} (pay exactly ${expected} on ${deal.network})`,
-    `Seller receives on release: ${formatCryptoAmount(amounts.sellerReceives)} ${deal.currency}`,
+    `Seller receives on release: ${formatCryptoAmount(sellerPreview.payout)} ${deal.currency}`,
     "Safe: funds stay in escrow until fully confirmed.",
     "Next: no need to tap Check Payment repeatedly — we'll DM you when confirmed and unlock the vault.",
     "",
@@ -119,8 +123,7 @@ export async function notifyBuyerPaymentPartialIfNeeded(dealId: string): Promise
   if (!deal?.buyer || !pay) return;
 
   const received = pay.receivedAmount?.toString() ?? "0";
-  const amounts = resolveDealPaymentAmounts(deal);
-  const expected = formatCryptoAmount(amounts.buyerPays);
+  const expected = formatCryptoAmount(resolveBuyerPayAmount(deal, pay));
   const kind = pay.status === "overpaid" ? "overpaid" : "underpaid";
   const text = [
     "━━━━━━━━━━━━━━━━━━",

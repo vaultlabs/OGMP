@@ -59,33 +59,6 @@ export async function startApp(): Promise<void> {
   void runHotPaymentWatcherOnce().catch(() => {});
   void runExpiryWatcherOnce().catch(() => {});
 
-  /** This app uses long polling (`bot.start()`). A leftover webhook in BotFather blocks updates — bot looks “dead”. */
-  try {
-    await mainBot.api.deleteWebhook({ drop_pending_updates: false });
-  } catch (e) {
-    logger.warn("main_bot_delete_webhook_failed", { err: String(e) });
-  }
-
-  await mainBot.start({
-    onStart: (info) => {
-      logger.info("main_bot_started", { username: info.username });
-    },
-  });
-
-  if (reportBot) {
-    try {
-      await reportBot.api.deleteWebhook({ drop_pending_updates: false });
-    } catch (e) {
-      logger.warn("report_bot_delete_webhook_failed", { err: String(e) });
-    }
-    await reportBot.start({
-      onStart: (info) => {
-        cacheReportBotTelegramUsername(info.username);
-        logger.info("report_bot_started", { username: info.username });
-      },
-    });
-  }
-
   const shutdown = async () => {
     clearInterval(paymentTimer);
     clearInterval(hotPaymentTimer);
@@ -99,4 +72,33 @@ export async function startApp(): Promise<void> {
 
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
+
+  /** Long polling — do not await `bot.start()` (Grammy blocks forever; report bot must start too). */
+  try {
+    await mainBot.api.deleteWebhook({ drop_pending_updates: false });
+  } catch (e) {
+    logger.warn("main_bot_delete_webhook_failed", { err: String(e) });
+  }
+  if (reportBot) {
+    try {
+      await reportBot.api.deleteWebhook({ drop_pending_updates: false });
+    } catch (e) {
+      logger.warn("report_bot_delete_webhook_failed", { err: String(e) });
+    }
+  }
+
+  void mainBot.start({
+    onStart: (info) => {
+      logger.info("main_bot_started", { username: info.username });
+    },
+  });
+
+  if (reportBot) {
+    void reportBot.start({
+      onStart: (info) => {
+        cacheReportBotTelegramUsername(info.username);
+        logger.info("report_bot_started", { username: info.username });
+      },
+    });
+  }
 }

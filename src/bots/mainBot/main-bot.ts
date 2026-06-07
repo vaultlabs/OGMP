@@ -130,8 +130,9 @@ import {
   computeProcessorInvoiceAmount,
   formatCryptoAmount,
   formatFeeBreakdownLines,
+  previewSellerPayoutAmount,
   quoteDealPaymentTotals,
-  resolveDealPaymentAmounts,
+  resolveBuyerPayAmount,
 } from "../../services/fee.service.js";
 import { maskPayoutAddress } from "../../services/payout.service.js";
 import { formatDealCardHtml, loadDealCardContext } from "./deal-card.js";
@@ -819,7 +820,11 @@ export function createMainBot(): Bot<Context> {
     const addr = deal.paymentAddress;
     const alertText = addr.length > 180 ? `${addr.slice(0, 160)}…` : addr;
     await ctx.answerCallbackQuery({ text: alertText, show_alert: true });
-    const amounts = resolveDealPaymentAmounts(deal);
+    const pay = await prisma.payment.findFirst({
+      where: { dealId: deal.id },
+      orderBy: { createdAt: "desc" },
+    });
+    const buyerPays = resolveBuyerPayAmount(deal, pay);
     await replyOrEditCallbackMessage(
       ctx,
       [
@@ -827,7 +832,7 @@ export function createMainBot(): Bot<Context> {
         "",
         `<code>${escapeTelegramHtml(addr)}</code>`,
         "",
-        `<b>Send exactly</b> ${escapeTelegramHtml(formatCryptoAmount(amounts.buyerPays))} ${escapeTelegramHtml(deal.currency)}`,
+        `<b>Send exactly</b> ${escapeTelegramHtml(formatCryptoAmount(buyerPays))} ${escapeTelegramHtml(deal.currency)}`,
         "",
         PAYMENT_EXACT_AMOUNT_WARNING_HTML,
       ].join("\n"),
@@ -917,12 +922,19 @@ export function createMainBot(): Bot<Context> {
       await ctx.answerCallbackQuery({ text: "Not ready for release", show_alert: true });
       return;
     }
-    const amounts = resolveDealPaymentAmounts(deal);
+    const pay = await prisma.payment.findFirst({
+      where: { dealId: deal.id },
+      orderBy: { createdAt: "desc" },
+    });
+    const sellerPreview = previewSellerPayoutAmount(deal, pay);
     await ctx.answerCallbackQuery();
     const kb = new InlineKeyboard()
       .text("Yes — release funds", `d:relok:${deal.dealCode}`)
       .row()
       .text("Cancel", `d:v:${deal.dealCode}`);
+    const sellerLine = sellerPreview.capped
+      ? `Seller receives: ${formatCryptoAmount(sellerPreview.payout)} ${deal.currency} (net after processor fees)`
+      : `Seller receives: ${formatCryptoAmount(sellerPreview.payout)} ${deal.currency}`;
     await ctx.reply(
       [
         "━━━━━━━━━━━━━━━━━━",
@@ -930,7 +942,7 @@ export function createMainBot(): Bot<Context> {
         "━━━━━━━━━━━━━━━━━━",
         "",
         `Deal: ${deal.dealCode}`,
-        `Seller receives: ${formatCryptoAmount(amounts.sellerReceives)} ${deal.currency}`,
+        sellerLine,
         "",
         "What: this sends crypto to the seller's wallet and closes the deal.",
         "Safe: only confirm if you received everything as agreed.",

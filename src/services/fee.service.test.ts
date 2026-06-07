@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   computeFeeBreakdown,
   formatCryptoAmount,
+  previewSellerPayoutAmount,
+  resolveBuyerPayAmount,
   resolveDealPaymentAmounts,
 } from "./fee.service.js";
 
@@ -64,5 +66,29 @@ describe("fee.service", () => {
     });
     expect(formatCryptoAmount(stored.buyerPays)).toBe("10.15");
     expect(formatCryptoAmount(stored.sellerReceives)).toBe("10");
+  });
+
+  it("resolveBuyerPayAmount prefers payment.expectedAmount when address exists", () => {
+    const deal = {
+      amount: D("0.2388"),
+      feeAmount: D("0.002388"),
+      feePayer: "buyer" as const,
+      networkFeeEstimate: D("0.0001"),
+    };
+    expect(
+      formatCryptoAmount(resolveBuyerPayAmount(deal, { expectedAmount: D("0.239") })),
+    ).toBe("0.239");
+  });
+
+  it("previewSellerPayoutAmount caps to received when lower than quote", () => {
+    const deal = {
+      amount: D("0.2388"),
+      feeAmount: D("0.002388"),
+      feePayer: "buyer" as const,
+      networkFeeEstimate: D("0"),
+    };
+    const preview = previewSellerPayoutAmount(deal, { receivedAmount: D("0.238491") });
+    expect(preview.capped).toBe(true);
+    expect(formatCryptoAmount(preview.payout)).toBe("0.238491");
   });
 });

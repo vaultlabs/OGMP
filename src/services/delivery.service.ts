@@ -14,7 +14,12 @@ import {
 import { userFacingDealStatus } from "../modules/deals/user-facing-status.js";
 import { COMMUNITY_TRUST_LINE, TRUST_OPS_FOOTER } from "../bots/mainBot/trust-copy.js";
 import { PAYMENT_EXACT_AMOUNT_WARNING } from "../bots/mainBot/payment-copy.js";
-import { formatCryptoAmount, resolveDealPaymentAmounts } from "./fee.service.js";
+import {
+  formatCryptoAmount,
+  previewSellerPayoutAmount,
+  resolveBuyerPayAmount,
+  resolveDealPaymentAmounts,
+} from "./fee.service.js";
 import { sellerPayoutReady } from "../modules/deals/seller-payout.service.js";
 import { getRedis } from "../utils/redis.js";
 
@@ -312,6 +317,8 @@ export async function notifyBuyerPaymentRequired(
   const pay = await prisma.payment.findFirst({ where: { dealId }, orderBy: { createdAt: "desc" } });
   if (!pay) return false;
   const amounts = resolveDealPaymentAmounts(deal);
+  const buyerPays = resolveBuyerPayAmount(deal, pay);
+  const sellerPreview = previewSellerPayoutAmount(deal, pay);
   const locked = await prisma.dealMessage.findMany({
     where: { dealId, lockedForBuyer: true, senderId: deal.sellerId },
     orderBy: { createdAt: "desc" },
@@ -320,9 +327,9 @@ export async function notifyBuyerPaymentRequired(
   const names = locked.map((m: DealMessage) => m.fileName).filter(Boolean) as string[];
   const text = buyerPaymentRequiredText({
     dealCode: deal.dealCode,
-    payAmount: formatCryptoAmount(amounts.buyerPays),
+    payAmount: formatCryptoAmount(buyerPays),
     dealAmount: formatCryptoAmount(amounts.dealAmount),
-    sellerReceives: formatCryptoAmount(amounts.sellerReceives),
+    sellerReceives: formatCryptoAmount(sellerPreview.payout),
     escrowFee: formatCryptoAmount(amounts.escrowFee),
     feePayer: amounts.feePayer,
     currency: deal.currency,
