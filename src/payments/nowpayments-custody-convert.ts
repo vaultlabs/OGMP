@@ -127,18 +127,29 @@ async function createConversion(
       text.slice(0, 300);
     throw new Error(`NOWPayments conversion failed (${res.status}): ${msg}`);
   }
-  const id =
-    (typeof data.deposit_id === "string" && data.deposit_id) ||
-    (typeof data.deposit_id === "number" && String(data.deposit_id)) ||
-    (typeof data.id === "string" && data.id) ||
-    (typeof data.id === "number" && String(data.id)) ||
-    (typeof data.conversion_id === "string" && data.conversion_id) ||
-    (typeof data.conversion_id === "number" && String(data.conversion_id));
+  const id = pickConversionId(data);
   if (!id) {
     logger.warn("custody_convert_bad_response", { status: res.status, body: text.slice(0, 400) });
     throw new Error("NOWPayments conversion response missing id/deposit_id");
   }
   return id;
+}
+
+/** NOWPayments wraps conversion id in `{ result: { id } }` on some accounts. */
+export function pickConversionId(data: Record<string, unknown>): string | null {
+  const nested =
+    data.result && typeof data.result === "object" && data.result !== null
+      ? (data.result as Record<string, unknown>)
+      : null;
+  for (const src of [nested, data]) {
+    if (!src) continue;
+    for (const key of ["deposit_id", "id", "conversion_id"] as const) {
+      const v = src[key];
+      if (typeof v === "string" && v.trim()) return v.trim();
+      if (typeof v === "number" && Number.isFinite(v)) return String(v);
+    }
+  }
+  return null;
 }
 
 async function waitConversionFinished(
@@ -193,7 +204,8 @@ export async function ensureCustodyBalanceForPayout(params: {
   if (!balances) return { ok: true };
 
   const available = balances[payCur]?.amount ?? 0;
-  if (available >= needed * 1.005) {
+  // Float tolerance — payout amount should already be capped to available/received.
+  if (available + 1e-8 >= needed) {
     return { ok: true };
   }
 
@@ -234,7 +246,7 @@ export async function ensureCustodyBalanceForPayout(params: {
 
       balances = await fetchNowpaymentsBalance();
       const newAvail = balances?.[payCur]?.amount ?? 0;
-      if (newAvail >= needed * 1.005) {
+      if (newAvail + 1e-8 >= needed) {
         logger.warn("custody_convert_ok", { payCur, newAvail, needed });
         return { ok: true };
       }
@@ -245,9 +257,9 @@ export async function ensureCustodyBalanceForPayout(params: {
 
   const finalAvail = (await fetchNowpaymentsBalance())?.[payCur]?.amount ?? 0;
   return {
-    ok: finalAvail >= needed * 1.005,
+    ok: finalAvail + 1e-8 >= needed,
     detail:
-      finalAvail >= needed * 1.005
+      finalAvail + 1e-8 >= needed
         ? undefined
         : `After auto-convert, Custody has ${finalAvail} ${payCur} but payout needs ${needed}. Top up Custody or convert manually in NOWPayments.`,
   };

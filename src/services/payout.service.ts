@@ -10,7 +10,7 @@ import { logger } from "../utils/logger.js";
 import { formatCryptoAmount, resolveDealPaymentAmounts } from "./fee.service.js";
 import { randomBytes } from "node:crypto";
 
-import { formatPayoutAmount } from "../payments/payout-amount.js";
+import { computeEscrowPayoutAmount, formatPayoutAmount } from "../payments/payout-amount.js";
 import {
   isPayoutVerifyConfigured,
 } from "../payments/nowpayments-payout-verify.js";
@@ -67,6 +67,41 @@ export async function executeDealPayoutAfterRelease(dealId: string): Promise<Dea
     }
 
     const amounts = resolveDealPaymentAmounts(deal);
+    const payment = await prisma.payment.findFirst({
+      where: { dealId },
+      orderBy: { createdAt: "desc" },
+    });
+
+    let custodyAvailable: number | null = null;
+    if (getPaymentProvider().name === "nowpayments") {
+      const { fetchNowpaymentsBalance } = await import("../payments/nowpayments-balance.js");
+      const { payCurrencyForDeal } = await import("../payments/nowpayments-custody-convert.js");
+      const balances = await fetchNowpaymentsBalance();
+      const payCur = payCurrencyForDeal(deal.currency, deal.network);
+      custodyAvailable = balances?.[payCur]?.amount ?? null;
+    }
+
+    const payoutAmount = computeEscrowPayoutAmount({
+      sellerReceives: amounts.sellerReceives,
+      receivedAmount: payment?.receivedAmount ?? null,
+      custodyAvailable,
+    });
+
+    if (!payoutAmount.gt(0)) {
+      return { ok: false, error: "Payout amount is zero after capping to received/custody balance." };
+    }
+
+    if (payoutAmount.lt(amounts.sellerReceives)) {
+      logger.warn("payout_amount_capped", {
+        dealId,
+        dealCode: deal.dealCode,
+        quoted: formatCryptoAmount(amounts.sellerReceives),
+        capped: formatPayoutAmount(payoutAmount),
+        received: payment?.receivedAmount?.toString() ?? null,
+        custodyAvailable,
+      });
+    }
+
     let payoutRow = deal.payouts.find((p) => p.status !== "failed") ?? null;
 
     if (payoutRow?.status === "completed") {
@@ -91,13 +126,21 @@ export async function executeDealPayoutAfterRelease(dealId: string): Promise<Dea
       payoutRow = await prisma.payout.create({
         data: {
           dealId,
-          amount: amounts.sellerReceives,
-          feeDeducted: amounts.dealAmount.sub(amounts.sellerReceives),
+          amount: payoutAmount,
+          feeDeducted: amounts.dealAmount.sub(payoutAmount),
           currency: deal.currency,
           network: deal.network,
           toAddress: deal.sellerPayoutAddress.trim(),
           status: "pending",
           providerRef: null,
+        },
+      });
+    } else if (!payoutRow.amount.eq(payoutAmount)) {
+      payoutRow = await prisma.payout.update({
+        where: { id: payoutRow.id },
+        data: {
+          amount: payoutAmount,
+          feeDeducted: amounts.dealAmount.sub(payoutAmount),
         },
       });
     }
@@ -113,7 +156,8 @@ export async function executeDealPayoutAfterRelease(dealId: string): Promise<Dea
       logger.warn("payout_create_start", {
         dealId,
         dealCode: deal.dealCode,
-        amount: formatCryptoAmount(amounts.sellerReceives),
+        amount: formatPayoutAmount(payoutAmount),
+        quotedSeller: formatCryptoAmount(amounts.sellerReceives),
         currency: deal.currency,
         network: deal.network,
       });
@@ -122,7 +166,7 @@ export async function executeDealPayoutAfterRelease(dealId: string): Promise<Dea
         const prep = await ensureCustodyBalanceForPayout({
           currency: deal.currency,
           network: deal.network,
-          amountNeeded: formatPayoutAmount(amounts.sellerReceives),
+          amountNeeded: formatPayoutAmount(payoutAmount),
         });
         if (!prep.ok) {
           throw new Error(prep.detail ?? "NOWPayments Custody balance too low for payout (auto-convert failed).");
@@ -154,7 +198,7 @@ export async function executeDealPayoutAfterRelease(dealId: string): Promise<Dea
             sellerPayoutAddress: deal.sellerPayoutAddress,
             sellerId: deal.sellerId,
           },
-          amounts.sellerReceives,
+          payoutAmount,
           result.status,
         );
       }
