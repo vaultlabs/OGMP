@@ -8,6 +8,7 @@
     "node": ">=20.10.0"
   },
   "scripts": {
+    "postinstall": "prisma generate",
     "first-time": "node scripts/copy-env-if-needed.mjs",
     "check-setup": "node scripts/check-setup.mjs",
     "docker:db": "docker compose up -d postgres redis",

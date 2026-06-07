@@ -12,6 +12,13 @@ async function main(): Promise<void> {
   if (!process.env.DATABASE_URL?.trim()) {
     throw new Error("DATABASE_URL is missing — cannot run db boot");
   }
+  console.info("[OGMP-MM] prisma_generate_start");
+  execSync("npx prisma generate", {
+    stdio: "inherit",
+    cwd: process.cwd(),
+    env: process.env,
+  });
+  console.info("[OGMP-MM] prisma_generate_ok");
   if (process.env.SKIP_PRISMA_MIGRATE_ON_START !== "true" && process.env.SKIP_PRISMA_MIGRATE_ON_START !== "1") {
     console.info("[OGMP-MM] prisma_migrate_deploy_start");
     execSync("npx prisma migrate deploy", {
