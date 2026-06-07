@@ -11,11 +11,16 @@ import {
   setSellerPayoutDraft,
 } from "../../modules/deals/seller-payout.service.js";
 import { maskPayoutAddress } from "../../services/payout.service.js";
-import { findUserByTelegramId } from "../../modules/users/user.service.js";
+import { ensureTelegramMember } from "../../modules/users/user.service.js";
 
 async function requireUser(ctx: Context) {
   if (!ctx.from) return null;
-  return findUserByTelegramId(BigInt(ctx.from.id));
+  return ensureTelegramMember({
+    telegramId: BigInt(ctx.from.id),
+    username: ctx.from.username,
+    firstName: ctx.from.first_name,
+    bot: "main",
+  });
 }
 
 export function registerSellerPayoutHandlers(bot: Bot<Context>): void {

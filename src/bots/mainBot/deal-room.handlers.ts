@@ -6,7 +6,7 @@ import {
 } from "../../modules/dealMessages/deal-room-session.service.js";
 import { createWizardExpectsPlainText, getCreateWizard } from "./create-deal-wizard.js";
 import { saveDealRoomMessage } from "../../modules/dealMessages/dealMessage.service.js";
-import { findUserByTelegramId } from "../../modules/users/user.service.js";
+import { ensureTelegramMember } from "../../modules/users/user.service.js";
 import { prisma } from "../../db/prisma.js";
 import type { DealMessageType } from "@prisma/client";
 import {
@@ -38,7 +38,12 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
       await ctx.answerCallbackQuery({ text: "Deal not found", show_alert: true });
       return;
     }
-    const u = await findUserByTelegramId(BigInt(ctx.from.id));
+    const u = await ensureTelegramMember({
+      telegramId: BigInt(ctx.from.id),
+      username: ctx.from.username,
+      firstName: ctx.from.first_name,
+      bot: "main",
+    });
     if (!u) return;
     const deal = await prisma.deal.findFirst({
       where: {
@@ -77,7 +82,12 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
     }
     const dealId = await getActiveDealRoom(tid);
     if (!dealId) return next();
-    const u = await findUserByTelegramId(BigInt(ctx.from.id));
+    const u = await ensureTelegramMember({
+      telegramId: BigInt(ctx.from.id),
+      username: ctx.from.username,
+      firstName: ctx.from.first_name,
+      bot: "main",
+    });
     if (!u) return;
     const deal = await prisma.deal.findUnique({ where: { id: dealId } });
     if (!deal) return;
@@ -117,7 +127,12 @@ export function registerDealRoomHandlers(bot: Bot<Context>): void {
     if (!ctx.from) return;
     const dealId = await getActiveDealRoom(BigInt(ctx.from.id));
     if (!dealId) return;
-    const u = await findUserByTelegramId(BigInt(ctx.from.id));
+    const u = await ensureTelegramMember({
+      telegramId: BigInt(ctx.from.id),
+      username: ctx.from.username,
+      firstName: ctx.from.first_name,
+      bot: "main",
+    });
     if (!u) return;
     const deal = await prisma.deal.findUnique({ where: { id: dealId } });
     if (!deal) return;

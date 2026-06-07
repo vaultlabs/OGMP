@@ -314,7 +314,7 @@ export async function ensurePaymentInstruction(dealId: string): Promise<Deal> {
   if (deal.status !== "waiting_payment") return deal;
   if (deal.paymentAddress) return deal;
   if (!sellerPayoutReady(deal)) {
-    throw new StateMachineError("SELLER_PAYOUT_REQUIRED");
+    throw new StateMachineError("Seller must set and confirm a payout wallet before the buyer can pay.");
   }
 
   const coin = await prisma.supportedCoin.findFirst({
@@ -436,7 +436,7 @@ export async function markDelivered(sellerId: string, dealId: string): Promise<D
   if (!deal) throw new NotFoundError("Deal not found");
   assertNotFrozen(deal);
   if (deal.sellerId !== sellerId) throw new ForbiddenError("Only the seller can mark delivered");
-  if (deal.status !== "funded") throw new StateMachineError("Invalid state for delivery");
+  if (deal.status !== "funded") throw new StateMachineError("Delivery can only be marked after payment is confirmed.");
   const next = await transitionDealStatus(dealId, "funded", "item_delivered", {
     deliveredAt: new Date(),
   });
@@ -479,7 +479,7 @@ export async function buyerConfirmRelease(buyerId: string, dealId: string): Prom
   if (!deal) throw new NotFoundError("Deal not found");
   assertNotFrozen(deal);
   if (deal.buyerId !== buyerId) throw new ForbiddenError("Only the buyer can confirm release");
-  if (deal.status !== "item_delivered") throw new StateMachineError("Invalid state for release confirm");
+  if (deal.status !== "item_delivered") throw new StateMachineError("Release is only available after the seller marks delivery and you review it.");
   const suspiciousHold =
     hasActiveSuspiciousFlags(deal.buyer?.suspiciousFlags) ||
     hasActiveSuspiciousFlags(deal.seller?.suspiciousFlags);

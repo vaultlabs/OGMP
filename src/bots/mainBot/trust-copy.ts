@@ -77,7 +77,10 @@ export const SAFETY_RULES_PAGE = [
 ].join("\n");
 
 export function supportPageText(supportUsername: string | undefined): string {
-  const handle = supportUsername?.trim().replace(/^@+/, "") || "your_support_handle";
+  const handle = supportUsername?.trim().replace(/^@+/, "");
+  const supportLine = handle
+    ? `Official support: @${handle}`
+    : "Official support: use /support in this bot with your deal code.";
   return [
     "━━━━━━━━━━━━━━━━━━",
     "OGMP MM — Support",
@@ -87,7 +90,7 @@ export function supportPageText(supportUsername: string | undefined): string {
     "Safe: deal money/files stay under Deal Protection in-bot.",
     "Next: deal issue → Open Case; general → /support format in this bot.",
     "",
-    `Official support: @${handle}`,
+    supportLine,
     "",
     "Only trust admins listed inside this bot.",
     "",

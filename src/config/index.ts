@@ -85,6 +85,20 @@ const envSchema = z
         path: ["MAIN_BOT_TOKEN"],
       });
     }
+    if (data.NODE_ENV === "production" && data.PAYMENT_PROVIDER === "mock") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "PAYMENT_PROVIDER=mock is not allowed when NODE_ENV=production",
+        path: ["PAYMENT_PROVIDER"],
+      });
+    }
+    if (data.NODE_ENV === "production" && !data.REPORT_BOT_USERNAME?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "REPORT_BOT_USERNAME is required in production (report bot deep links)",
+        path: ["REPORT_BOT_USERNAME"],
+      });
+    }
     if (data.PAYMENT_PROVIDER === "nowpayments") {
       if (!data.NOWPAYMENTS_API_KEY?.trim()) {
         ctx.addIssue({

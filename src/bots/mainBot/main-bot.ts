@@ -64,13 +64,18 @@ import {
   openDispute,
 } from "../../modules/deals/deal.service.js";
 import {
-  upsertTelegramUser,
+  ensureTelegramMember,
   acceptTermsForUser,
   findUserByTelegramId,
   banUserByTelegramId,
   unbanUserByTelegramId,
   markUserGatewayAccess,
 } from "../../modules/users/user.service.js";
+import {
+  logGatewayVerificationSkipped,
+  verifyGatewayChatMembership,
+} from "../../modules/gateway/gateway-verify.service.js";
+import { extractJoinTokenFromText } from "../../utils/join-invite.js";
 import { createSupportTicket } from "../../modules/support/support.service.js";
 import {
   clearCreateWizard,
@@ -196,7 +201,7 @@ async function tryJoinDealByToken(ctx: Context, user: User, token: string): Prom
     const deal = await joinDealByToken(user, token);
     await replyJoinDealSuccess(ctx, user, deal);
   } catch (e) {
-    await ctx.reply(`❌ ${String((e as Error).message)}`);
+    await ctx.reply(`❌ ${replyTextForCaughtError(e)}`);
   }
 }
 
@@ -249,9 +254,11 @@ async function replyUserProfile(ctx: Context, u: User): Promise<void> {
       `User: ${u.firstName ?? "User"} (${un})`,
       `Status: ${u.banned ? "Restricted" : "Active"}`,
       `Completed deals: ${u.completedDeals}`,
-      `Total volume (USD field): ${u.totalVolumeUsd.toString()}`,
+      `Total volume: ${u.totalVolumeUsd.toString()}`,
       `Rating: ${u.reputationScore.toString()} ⭐`,
-      `Case holds (lifetime): ${u.disputedDeals}`,
+      `Cases opened (lifetime): ${u.disputedDeals}`,
+      `Escrow bot: ${u.registeredOnMainBot ? "registered" : "—"}`,
+      `Report bot: ${u.registeredOnReportBot ? "registered" : "—"}`,
       `Joined: ${u.joinedAt.toISOString().slice(0, 10)}`,
       `Community tier: ${community}`,
       `Admin badge: ${adminBadge}`,
@@ -308,7 +315,18 @@ export function createMainBot(): Bot<Context> {
   });
 
   bot.use(async (ctx, next) => {
-    if (!ctx.from) return;
+    if (!ctx.from) return next();
+    await ensureTelegramMember({
+      telegramId: BigInt(ctx.from.id),
+      username: ctx.from.username,
+      firstName: ctx.from.first_name,
+      bot: "main",
+    });
+    await next();
+  });
+
+  bot.use(async (ctx, next) => {
+    if (!ctx.from) return next();
     const u = await findUserByTelegramId(BigInt(ctx.from.id));
     if (u?.banned) {
       await ctx.reply("⛔ Your access to OGMP MM has been restricted.");
@@ -319,15 +337,25 @@ export function createMainBot(): Bot<Context> {
 
   bot.use(gatewayAccessMiddleware);
 
+  bot.on("message:text", async (ctx, next) => {
+    if (!ctx.from || ctx.message.text.startsWith("/")) return next();
+    const tok = extractJoinTokenFromText(ctx.message.text);
+    if (!tok) return next();
+    const u = await requireUser(ctx);
+    if (!u) return;
+    await tryJoinDealByToken(ctx, u, tok);
+  });
+
   registerDealRoomHandlers(bot);
   registerSellerPayoutHandlers(bot);
 
   async function requireUser(ctx: Context) {
     if (!ctx.from) return null;
-    return upsertTelegramUser({
+    return ensureTelegramMember({
       telegramId: BigInt(ctx.from.id),
       username: ctx.from.username,
       firstName: ctx.from.first_name,
+      bot: "main",
     });
   }
 
@@ -403,9 +431,25 @@ export function createMainBot(): Bot<Context> {
       return;
     }
 
+    let gatewayVerified = false;
+    if (eff.chatId) {
+      const check = await verifyGatewayChatMembership(bot.api, eff.chatId, tid);
+      if (check.ok) {
+        gatewayVerified = true;
+      } else if (check.reason === "not_member") {
+        await ctx.answerCallbackQuery({
+          text: "Join the OGMP gateway first, then tap Continue again.",
+          show_alert: true,
+        });
+        return;
+      } else {
+        logGatewayVerificationSkipped(check.description, { chatId: eff.chatId });
+      }
+    }
+
     await ctx.answerCallbackQuery({ text: "Welcome!" });
     await clearGatewayPromptDedup(tid);
-    u = await markUserGatewayAccess({ userId: u.id, verified: false });
+    u = await markUserGatewayAccess({ userId: u.id, verified: gatewayVerified });
 
     const fresh = await findUserByTelegramId(tid);
     if (!fresh?.termsAcceptedAt) {
@@ -474,9 +518,13 @@ export function createMainBot(): Bot<Context> {
 
   bot.callbackQuery(/^m:create$/, async (ctx) => {
     if (!ctx.from) return;
-    const u = await findUserByTelegramId(BigInt(ctx.from.id));
+    const u = await requireUser(ctx);
     if (!u?.termsAcceptedAt) {
       await ctx.answerCallbackQuery({ text: "Accept terms first", show_alert: true });
+      await ctx.reply(TERMS_TEXT, {
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard().text("✅ I agree to the Terms", "terms:ok"),
+      });
       return;
     }
     await ctx.answerCallbackQuery();
@@ -674,7 +722,7 @@ export function createMainBot(): Bot<Context> {
       await ctx.answerCallbackQuery({ text: "Not found", show_alert: true });
       return;
     }
-    const u = await findUserByTelegramId(BigInt(ctx.from.id));
+    const u = await requireUser(ctx);
     if (!u) return;
     if (deal.buyerId !== u.id && deal.sellerId !== u.id) {
       await ctx.answerCallbackQuery({ text: "Only buyer or seller can use report flow.", show_alert: true });
@@ -687,7 +735,7 @@ export function createMainBot(): Bot<Context> {
     const rb = getReportBotUsernameForDeepLinks();
     if (!rb) {
       await ctx.answerCallbackQuery({
-        text: "Report bot username missing. Set REPORT_BOT_USERNAME (no @) in .env, restart, or wait until the REPORT bot has finished starting.",
+        text: "Case Review bot is starting up — wait a moment and try Open Case again.",
         show_alert: true,
       });
       return;
@@ -719,7 +767,7 @@ export function createMainBot(): Bot<Context> {
         reply_markup: kb,
       });
     } catch (e) {
-      await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
+      await ctx.answerCallbackQuery({ text: replyTextForCaughtError(e), show_alert: true });
     }
   });
 
@@ -853,7 +901,6 @@ export function createMainBot(): Bot<Context> {
       await ctx.answerCallbackQuery({ text: "Not available yet", show_alert: true });
       return;
     }
-    await ctx.answerCallbackQuery();
     const { sendBuyerDeliveryBundleToChat } = await import("../../services/buyer-delivery-send.service.js");
     const r = await sendBuyerDeliveryBundleToChat({ buyerTelegramId: BigInt(ctx.from.id), dealId: deal.id });
     await ctx.answerCallbackQuery({
@@ -888,7 +935,7 @@ export function createMainBot(): Bot<Context> {
         }
       }
     } catch (e) {
-      await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
+      await ctx.answerCallbackQuery({ text: replyTextForCaughtError(e), show_alert: true });
     }
   });
 
@@ -905,7 +952,7 @@ export function createMainBot(): Bot<Context> {
       const kb = new InlineKeyboard().text("View deal", `d:v:${d.dealCode}`);
       await replyOrEditCallbackMessage(ctx, card, { parse_mode: "HTML", reply_markup: kb });
     } catch (e) {
-      await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
+      await ctx.answerCallbackQuery({ text: replyTextForCaughtError(e), show_alert: true });
     }
   });
 
@@ -967,7 +1014,7 @@ export function createMainBot(): Bot<Context> {
         reply_markup: new InlineKeyboard().text("View deal", `d:v:${d.dealCode}`),
       });
     } catch (e) {
-      await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
+      await ctx.answerCallbackQuery({ text: replyTextForCaughtError(e), show_alert: true });
     }
   });
 
@@ -996,7 +1043,7 @@ export function createMainBot(): Bot<Context> {
         ].join("\n"),
       );
     } catch (e) {
-      await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
+      await ctx.answerCallbackQuery({ text: replyTextForCaughtError(e), show_alert: true });
     }
   });
 
@@ -1011,13 +1058,13 @@ export function createMainBot(): Bot<Context> {
       await ctx.answerCallbackQuery({ text: "Cancelled" });
       await ctx.reply(`Deal ${d.dealCode} is now ${d.status}.`);
     } catch (e) {
-      await ctx.answerCallbackQuery({ text: String((e as Error).message), show_alert: true });
+      await ctx.answerCallbackQuery({ text: replyTextForCaughtError(e), show_alert: true });
     }
   });
 
   bot.callbackQuery(/^m:profile$/, async (ctx) => {
     if (!ctx.from) return;
-    const u = await findUserByTelegramId(BigInt(ctx.from.id));
+    const u = await requireUser(ctx);
     await ctx.answerCallbackQuery();
     if (!u) return;
     await replyUserProfile(ctx, u);
@@ -1383,9 +1430,12 @@ export function createMainBot(): Bot<Context> {
 
   bot.command("create", async (ctx) => {
     if (!ctx.from) return;
-    const u = await findUserByTelegramId(BigInt(ctx.from.id));
+    const u = await requireUser(ctx);
     if (!u?.termsAcceptedAt) {
-      await ctx.reply("Please /start and accept terms first.");
+      await ctx.reply("Please accept terms first.", {
+        reply_markup: new InlineKeyboard().text("✅ I agree to the Terms", "terms:ok"),
+      });
+      await ctx.reply(TERMS_TEXT, { parse_mode: "Markdown" });
       return;
     }
     await startCreateDealFlow(ctx, BigInt(ctx.from.id));
@@ -1393,14 +1443,14 @@ export function createMainBot(): Bot<Context> {
 
   bot.command("deals", async (ctx) => {
     if (!ctx.from) return;
-    const u = await findUserByTelegramId(BigInt(ctx.from.id));
+    const u = await requireUser(ctx);
     if (!u) return;
     await replyMyDealsList(ctx, u, true);
   });
 
   bot.command("profile", async (ctx) => {
     if (!ctx.from) return;
-    const u = await findUserByTelegramId(BigInt(ctx.from.id));
+    const u = await requireUser(ctx);
     if (!u) return;
     await replyUserProfile(ctx, u);
   });

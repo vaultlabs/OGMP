@@ -3,7 +3,7 @@ import { getReportBotToken, isAdminTelegramId, loadConfig } from "../../config/i
 import { prisma } from "../../db/prisma.js";
 import { logger } from "../../utils/logger.js";
 import { getRedis } from "../../utils/redis.js";
-import { upsertTelegramUser, findUserByTelegramId } from "../../modules/users/user.service.js";
+import { ensureTelegramMember, findUserByTelegramId } from "../../modules/users/user.service.js";
 import {
   validateReportStartToken,
   markReportSessionUsed,
@@ -36,7 +36,7 @@ type Wiz =
   | { step: "role"; sessionId: string; dealId: string; userId: string }
   | { step: "category"; sessionId: string; dealId: string; userId: string; role: ParticipantRole }
   | { step: "describe"; sessionId: string; dealId: string; userId: string; role: ParticipantRole; category: ReportCategory }
-  | { step: "collect"; reportId: string; dealId: string }
+  | { step: "collect"; reportId: string; dealId: string; sessionId: string }
   | { step: "append_collect"; reportId: string; dealId: string };
 
 async function getWiz(id: bigint): Promise<Wiz | null> {
@@ -95,15 +95,56 @@ export function createReportBot(): Bot<Context> {
       void ctx
         .reply(
           [
-            "Something went wrong in the REPORT bot.",
+            "━━━━━━━━━━━━━━━━━━",
+            "OGMP MM REPORT — Something went wrong",
+            "━━━━━━━━━━━━━━━━━━",
             "",
-            "What to try: send /start again, or open your case from the main escrow bot. If it repeats, wait a few minutes.",
+            "What to try: send /start again, or open your case from the main escrow bot.",
+            "Safe: your deal stays under Case Review — do not pay outside OGMP MM.",
+            "Next: Main bot → your deal → Open Case.",
             "",
             "Never paste API keys, tokens, or wallet seeds here.",
           ].join("\n"),
         )
         .catch(() => {});
     }
+  });
+
+  bot.use(async (ctx, next) => {
+    if (!ctx.from) return next();
+    await ensureTelegramMember({
+      telegramId: BigInt(ctx.from.id),
+      username: ctx.from.username,
+      firstName: ctx.from.first_name,
+      bot: "report",
+    });
+    const u = await findUserByTelegramId(BigInt(ctx.from.id));
+    if (u?.banned) {
+      await ctx.reply("⛔ Your access to OGMP MM has been restricted.");
+      return;
+    }
+    await next();
+  });
+
+  bot.command("help", async (ctx) => {
+    await ctx.reply(
+      [
+        "━━━━━━━━━━━━━━━━━━",
+        "OGMP MM REPORT — Help",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        "What: submit or add evidence for Case Review.",
+        "Safe: only use links from your deal card in the main bot.",
+        "",
+        "1. Main bot → your deal → Open Case",
+        "2. Tap Open REPORT bot",
+        "3. Answer the prompts",
+        "4. Upload photos, videos, documents",
+        "5. Send /report_done (or /append_done for extra proof)",
+        "",
+        "Commands: /start · /help · /report_done · /append_done",
+      ].join("\n"),
+    );
   });
 
   bot.command("start", async (ctx) => {
@@ -123,27 +164,19 @@ export function createReportBot(): Bot<Context> {
         await ctx.reply(REPORT_BOT_HOME_PAGE, { reply_markup: kb });
       } catch (e) {
         logger.error("report_bot_start_home_reply_failed", { err: String(e) });
-        await ctx.reply(
-          [
-            "OGMP MM REPORT — Case Review",
-            "",
-            "Open a case from the main OGMP MM bot (deal card → Open Case).",
-            "If your server sets BOT_PUBLIC_USERNAME, you will also get a Start Case link button.",
-          ].join("\n"),
-          { reply_markup: kb },
-        );
+        await ctx.reply(REPORT_BOT_HOME_PAGE, { reply_markup: kb });
       }
       return;
     }
     const raw = arg.slice("report_".length);
     try {
       const v = await validateReportStartToken(raw, BigInt(ctx.from.id));
-      await upsertTelegramUser({
+      const u = await ensureTelegramMember({
         telegramId: BigInt(ctx.from.id),
         username: ctx.from.username,
         firstName: ctx.from.first_name,
+        bot: "report",
       });
-      const u = await findUserByTelegramId(BigInt(ctx.from.id));
       if (!u) {
         await ctx.reply("Could not sync user.");
         return;
@@ -174,17 +207,35 @@ export function createReportBot(): Bot<Context> {
         );
         return;
       }
+      const role: ParticipantRole = deal.buyerId === u.id ? "buyer" : "seller";
       await setWiz(BigInt(ctx.from.id), {
-        step: "role",
+        step: "category",
         sessionId: v.sessionId,
         dealId: v.dealId,
         userId: v.userId,
+        role,
       });
-      await ctx.reply("Who are you in this deal?", {
-        reply_markup: new InlineKeyboard()
-          .text("Buyer", "rp:role:buyer")
-          .text("Seller", "rp:role:seller"),
-      });
+      await ctx.reply(
+        [
+          `Case Review for deal — you are the *${role}*.`,
+          "",
+          "What is the issue?",
+        ].join("\n"),
+        {
+          parse_mode: "Markdown",
+          reply_markup: new InlineKeyboard()
+            .text("Seller did not deliver", "rp:cat:seller_no_delivery")
+            .row()
+            .text("Buyer refusing to confirm", "rp:cat:buyer_no_confirm")
+            .text("Wrong item/service", "rp:cat:wrong_item")
+            .row()
+            .text("Scam attempt", "rp:cat:scam_attempt")
+            .text("Payment issue", "rp:cat:payment_issue")
+            .row()
+            .text("Fake proof", "rp:cat:fake_proof")
+            .text("Other", "rp:cat:other"),
+        },
+      );
     } catch (e) {
       await ctx.reply(replyTextForCaughtError(e));
     }
@@ -192,7 +243,7 @@ export function createReportBot(): Bot<Context> {
 
   bot.callbackQuery(/^r:hint:main$/, async (ctx) => {
     await ctx.answerCallbackQuery({
-      text: "Open the main OGMP MM bot and use Report from your deal. Set BOT_PUBLIC_USERNAME on the server for a quick link button.",
+      text: "Open the main OGMP MM bot → your deal card → Open Case.",
       show_alert: true,
     });
   });
@@ -206,7 +257,7 @@ export function createReportBot(): Bot<Context> {
 
   bot.callbackQuery(/^r:hint:sup$/, async (ctx) => {
     await ctx.answerCallbackQuery({
-      text: "Set SUPPORT_USERNAME in server config for a Contact Support link, or reach staff through your OGMP community.",
+      text: "Use /support in the main OGMP MM bot, or ask in your OGMP community.",
       show_alert: true,
     });
   });
@@ -295,8 +346,12 @@ export function createReportBot(): Bot<Context> {
       category: w.category,
       description: desc,
     });
-    await markReportSessionUsed(w.sessionId);
-    await setWiz(BigInt(ctx.from.id), { step: "collect", reportId, dealId: w.dealId });
+    await setWiz(BigInt(ctx.from.id), {
+      step: "collect",
+      reportId,
+      dealId: w.dealId,
+      sessionId: w.sessionId,
+    });
     await ctx.reply(
       [
         "✅ Report draft created. Upload screenshots, videos, documents, or archives.",
@@ -431,6 +486,7 @@ export function createReportBot(): Bot<Context> {
       return;
     }
     try {
+      await markReportSessionUsed(w.sessionId);
       await submitReportAndFreezeDeal(w.reportId);
       await clearWiz(BigInt(ctx.from.id));
       await ctx.reply(
@@ -687,6 +743,8 @@ export function createReportBot(): Bot<Context> {
       [
         `User \`${user.telegramId.toString()}\` @${user.username ?? "n/a"}`,
         `Banned: ${user.banned}`,
+        `Main bot member: ${user.registeredOnMainBot}`,
+        `Report bot member: ${user.registeredOnReportBot}`,
         `Recent as buyer:\n${buyerLines}`,
         `Recent as seller:\n${sellerLines}`,
       ].join("\n\n"),
@@ -700,23 +758,27 @@ export function createReportBot(): Bot<Context> {
       return;
     }
     const id = ctx.match[1]!;
-    const rep = await prisma.report.findUnique({ where: { id } });
-    if (!rep) {
-      await ctx.answerCallbackQuery({ text: "Not found", show_alert: true });
-      return;
+    try {
+      const rep = await prisma.report.findUnique({ where: { id } });
+      if (!rep) {
+        await ctx.answerCallbackQuery({ text: "Not found", show_alert: true });
+        return;
+      }
+      await adminForceRelease(rep.dealId, BigInt(ctx.from.id));
+      await addReportAdminNote(id, BigInt(ctx.from.id), "Released via report bot");
+      await prisma.report.update({
+        where: { id },
+        data: { status: "resolved_release", resolvedAt: new Date() },
+      });
+      await prisma.deal.update({
+        where: { id: rep.dealId },
+        data: { frozen: false, frozenAt: null, frozenReason: null, activeReportId: null },
+      });
+      await ctx.answerCallbackQuery({ text: "Released" });
+      await ctx.reply("Deal released; report marked resolved_release.");
+    } catch (e) {
+      await ctx.answerCallbackQuery({ text: replyTextForCaughtError(e), show_alert: true });
     }
-    await adminForceRelease(rep.dealId, BigInt(ctx.from.id));
-    await addReportAdminNote(id, BigInt(ctx.from.id), "Released via report bot");
-    await prisma.report.update({
-      where: { id },
-      data: { status: "resolved_release", resolvedAt: new Date() },
-    });
-    await prisma.deal.update({
-      where: { id: rep.dealId },
-      data: { frozen: false, frozenAt: null, frozenReason: null, activeReportId: null },
-    });
-    await ctx.answerCallbackQuery({ text: "Released" });
-    await ctx.reply("Deal released; report marked resolved_release.");
   });
 
   bot.callbackQuery(/^rpa:ref:(.+)$/, async (ctx) => {
@@ -725,32 +787,59 @@ export function createReportBot(): Bot<Context> {
       return;
     }
     const id = ctx.match[1]!;
-    const rep = await prisma.report.findUnique({ where: { id } });
-    if (!rep) {
-      await ctx.answerCallbackQuery({ text: "Not found", show_alert: true });
+    try {
+      const rep = await prisma.report.findUnique({ where: { id } });
+      if (!rep) {
+        await ctx.answerCallbackQuery({ text: "Not found", show_alert: true });
+        return;
+      }
+      await adminForceRefund(rep.dealId, BigInt(ctx.from.id));
+      await addReportAdminNote(id, BigInt(ctx.from.id), "Refunded via report bot");
+      await prisma.report.update({
+        where: { id },
+        data: { status: "resolved_refund", resolvedAt: new Date() },
+      });
+      await prisma.deal.update({
+        where: { id: rep.dealId },
+        data: { frozen: false, frozenAt: null, frozenReason: null, activeReportId: null },
+      });
+      await ctx.answerCallbackQuery({ text: "Refunded" });
+      await ctx.reply("Deal refunded; report marked resolved_refund.");
+    } catch (e) {
+      await ctx.answerCallbackQuery({ text: replyTextForCaughtError(e), show_alert: true });
+    }
+  });
+
+  bot.command("note", async (ctx) => {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) {
+      await ctx.reply("Admin only.");
       return;
     }
-    await adminForceRefund(rep.dealId, BigInt(ctx.from.id));
-    await addReportAdminNote(id, BigInt(ctx.from.id), "Refunded via report bot");
-    await prisma.report.update({
-      where: { id },
-      data: { status: "resolved_refund", resolvedAt: new Date() },
+    const args = commandArgs(ctx.message?.text ?? "");
+    const reportId = args[0];
+    const note = args.slice(1).join(" ").trim();
+    if (!reportId || !note) {
+      await ctx.reply("Usage: /note REPORT_ID your note text");
+      return;
+    }
+    const rep = await prisma.report.findFirst({
+      where: { OR: [{ id: reportId }, { reportCode: reportId }] },
     });
-    await prisma.deal.update({
-      where: { id: rep.dealId },
-      data: { frozen: false, frozenAt: null, frozenReason: null, activeReportId: null },
-    });
-    await ctx.answerCallbackQuery({ text: "Refunded" });
-    await ctx.reply("Deal refunded; report marked resolved_refund.");
+    if (!rep) {
+      await ctx.reply("Report not found.");
+      return;
+    }
+    await addReportAdminNote(rep.id, BigInt(ctx.from.id), note);
+    await ctx.reply(`Note saved on ${rep.reportCode}.`);
   });
 
   bot.callbackQuery(/^rpa:note:(.+)$/, async (ctx) => {
-    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id))) {
+    if (!ctx.from || !isAdminTelegramId(BigInt(ctx.from.id)) || !ctx.match) {
       await ctx.answerCallbackQuery({ text: "Forbidden", show_alert: true });
       return;
     }
     await ctx.answerCallbackQuery();
-    await ctx.reply("Send /note REPORT_ID your note text");
+    await ctx.reply("Send: /note REPORT_ID your note text");
   });
 
   return bot;
