@@ -419,32 +419,19 @@ export class NowPaymentsProvider implements PaymentProvider {
 
     const verifyCode = await resolvePayoutVerificationCode();
     if (verifyCode) {
-      const vRes = await fetch(`${this.apiBase()}/v1/payout/${encodeURIComponent(withdrawalId)}/verify`, {
-        method: "POST",
-        headers: {
-          "x-api-key": apiKey,
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${bearer}`,
-        },
-        body: JSON.stringify({ verification_code: verifyCode }),
-      });
-      if (!vRes.ok) {
-        const vText = await vRes.text();
-        logger.warn("nowpayments_payout_verify_failed", {
-          withdrawalId,
-          status: vRes.status,
-          body: vText.slice(0, 300),
-          totpAuto: Boolean(cfg.NOWPAYMENTS_2FA_SECRET?.trim()),
-        });
-        const hint = cfg.NOWPAYMENTS_2FA_SECRET?.trim()
-          ? "Check NOWPAYMENTS_2FA_SECRET is the full 15-character 2FA Key from NOWPayments, not the 6-digit code. Or set NOWPAYMENTS_PAYOUT_VERIFY_CODE from email and /admin_retry_payout."
-          : "If 2FA is off, use the code from your NOWPayments email in NOWPAYMENTS_PAYOUT_VERIFY_CODE, then /admin_retry_payout.";
-        throw new Error(`NOWPayments payout verify failed (${vRes.status}). ${hint}`);
-      }
-      logger.info("nowpayments_payout_verified", {
+      const verified = await this.verifyPayoutWithRetry({
         withdrawalId,
-        mode: cfg.NOWPAYMENTS_2FA_SECRET?.trim() ? "totp_auto" : "manual_code",
+        verifyCode,
+        apiKey,
+        bearer,
+        totpAuto: Boolean(cfg.NOWPAYMENTS_2FA_SECRET?.trim()),
       });
+      if (!verified) {
+        logger.warn("nowpayments_payout_verify_deferred", {
+          withdrawalId,
+          help: "Payout was created; verify will retry via IPN or /admin_retry_payout. Check NOWPAYMENTS_2FA_SECRET if verify keeps failing.",
+        });
+      }
     } else if (isPayoutVerifyConfigured()) {
       logger.warn("nowpayments_payout_verify_empty_code");
     } else {
@@ -465,5 +452,55 @@ export class NowPaymentsProvider implements PaymentProvider {
       status,
       raw: data,
     };
+  }
+
+  /** NOWPayments may return 404 briefly right after create — retry before giving up. */
+  private async verifyPayoutWithRetry(params: {
+    withdrawalId: string;
+    verifyCode: string;
+    apiKey: string;
+    bearer: string;
+    totpAuto: boolean;
+  }): Promise<boolean> {
+    const delaysMs = [0, 2000, 4000, 8000];
+    for (let i = 0; i < delaysMs.length; i++) {
+      if (delaysMs[i] > 0) {
+        await new Promise((r) => setTimeout(r, delaysMs[i]));
+      }
+      const vRes = await fetch(
+        `${this.apiBase()}/v1/payout/${encodeURIComponent(params.withdrawalId)}/verify`,
+        {
+          method: "POST",
+          headers: {
+            "x-api-key": params.apiKey,
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${params.bearer}`,
+          },
+          body: JSON.stringify({ verification_code: params.verifyCode }),
+        },
+      );
+      if (vRes.ok) {
+        logger.info("nowpayments_payout_verified", {
+          withdrawalId: params.withdrawalId,
+          mode: params.totpAuto ? "totp_auto" : "manual_code",
+          attempt: i + 1,
+        });
+        return true;
+      }
+      const vText = await vRes.text();
+      const retryable = vRes.status === 404 || vRes.status === 429;
+      logger.warn("nowpayments_payout_verify_failed", {
+        withdrawalId: params.withdrawalId,
+        status: vRes.status,
+        body: vText.slice(0, 300),
+        totpAuto: params.totpAuto,
+        attempt: i + 1,
+        retryable,
+      });
+      if (!retryable || i === delaysMs.length - 1) {
+        return false;
+      }
+    }
+    return false;
   }
 }

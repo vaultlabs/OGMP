@@ -432,15 +432,40 @@ export async function markPayoutCompleted(params: {
   }
 }
 
+function extractPayoutIpnExternalId(payload: Record<string, unknown>): string | undefined {
+  const top = payload.unique_external_id;
+  if (typeof top === "string" && top) return top;
+  const withdrawals = Array.isArray(payload.withdrawals) ? payload.withdrawals : [];
+  for (const w of withdrawals) {
+    if (!w || typeof w !== "object") continue;
+    const ext = (w as Record<string, unknown>).unique_external_id;
+    if (typeof ext === "string" && ext) return ext;
+  }
+  return undefined;
+}
+
+function extractPayoutIpnProviderRef(payload: Record<string, unknown>): string | undefined {
+  const candidates = [payload.id, payload.payout_id, payload.batch_withdrawal_id];
+  for (const c of candidates) {
+    if (typeof c === "string" && c) return c;
+    if (typeof c === "number") return String(c);
+  }
+  const withdrawals = Array.isArray(payload.withdrawals) ? payload.withdrawals : [];
+  const w0 = withdrawals[0];
+  if (w0 && typeof w0 === "object") {
+    const id = (w0 as Record<string, unknown>).id;
+    if (typeof id === "string" && id) return id;
+    if (typeof id === "number") return String(id);
+  }
+  return undefined;
+}
+
 /** NOWPayments payout IPN (same HMAC as payments). */
 export async function processPayoutIpn(payload: Record<string, unknown>): Promise<void> {
-  const payoutId =
-    (typeof payload.id === "string" && payload.id) ||
-    (typeof payload.id === "number" && String(payload.id)) ||
-    (typeof payload.payout_id === "string" && payload.payout_id);
+  const payoutId = extractPayoutIpnProviderRef(payload);
   const status = typeof payload.status === "string" ? payload.status.toUpperCase() : "";
   const hash = typeof payload.hash === "string" ? payload.hash : undefined;
-  const externalId = typeof payload.unique_external_id === "string" ? payload.unique_external_id : undefined;
+  const externalId = extractPayoutIpnExternalId(payload);
 
   let row = externalId
     ? await prisma.payout.findUnique({ where: { id: externalId } })
